@@ -191,7 +191,7 @@ def perform_inner_collision(self):
     
         #merger
         donor_in_stellar_code.merge_with_other_star(accretor_in_stellar_code) 
-        self.channel_from_stellar.copy_attributes(["age", "mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "wind_mass_loss_rate", "temperature"]) #"gyration_radius_sq"                           
+        self.channel_from_stellar.copy_attributes(["age", "mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "temperature"]) #"gyration_radius_sq"                           
               
         donor.moment_of_inertia_of_star = self.moment_of_inertia(donor)        
     
@@ -249,7 +249,7 @@ def perform_inner_merger(bs, donor, accretor, self):
             
     #merger
     donor_in_stellar_code.merge_with_other_star(accretor_in_stellar_code) 
-    self.channel_from_stellar.copy_attributes(["age", "mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "wind_mass_loss_rate", "temperature"]) #"gyration_radius_sq"                           
+    self.channel_from_stellar.copy_attributes(["age", "mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "temperature"]) #"gyration_radius_sq"                           
     
     donor.moment_of_inertia_of_star = self.moment_of_inertia(donor)        
     
@@ -331,7 +331,7 @@ def common_envelope_angular_momentum_balance(bs, donor, accretor, self):
         #reduce_mass not subtrac mass, want geen adjust_donor_radius
         #check if star changes type     
         donor_in_stellar_code.change_mass(-1*(donor.mass-donor.core_mass), 0.|units.yr)    
-        self.channel_from_stellar.copy_attributes(["age", "mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "wind_mass_loss_rate", "temperature"]) #"gyration_radius_sq"                           
+        self.channel_from_stellar.copy_attributes(["age", "mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity","temperature"]) #"gyration_radius_sq"                           
         donor.moment_of_inertia_of_star = self.moment_of_inertia(donor)        
         accretor.moment_of_inertia_of_star = self.moment_of_inertia(accretor)        
 
@@ -396,7 +396,7 @@ def common_envelope_energy_balance(bs, donor, accretor, self):
         #reduce_mass not subtrac mass, want geen adjust_donor_radius
         #check if star changes type     
         donor_in_stellar_code.change_mass(-1*(donor.mass-donor.core_mass), 0.|units.yr)    
-        self.channel_from_stellar.copy_attributes(["age", "mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "wind_mass_loss_rate", "temperature"]) #"gyration_radius_sq"                           
+        self.channel_from_stellar.copy_attributes(["age", "mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity",  "temperature"]) #"gyration_radius_sq"                           
         donor.moment_of_inertia_of_star = self.moment_of_inertia(donor)        
         accretor.moment_of_inertia_of_star = self.moment_of_inertia(accretor)        
 
@@ -463,7 +463,7 @@ def double_common_envelope_energy_balance(bs, donor, accretor, self):
         donor_in_stellar_code.change_mass(-1*(donor.mass-donor.core_mass), 0.|units.yr)    
         accretor_in_stellar_code = accretor.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
         accretor_in_stellar_code.change_mass(-1*(accretor.mass-accretor.core_mass), 0.|units.yr)    
-        self.channel_from_stellar.copy_attributes(["age", "mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "wind_mass_loss_rate", "temperature"]) #"gyration_radius_sq"                           
+        self.channel_from_stellar.copy_attributes(["age", "mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "temperature"]) #"gyration_radius_sq"                           
         donor.moment_of_inertia_of_star = self.moment_of_inertia(donor)        
         accretor.moment_of_inertia_of_star = self.moment_of_inertia(accretor)        
 
@@ -671,7 +671,7 @@ def stable_mass_transfer(bs, donor, accretor, self):
 
     #to adjust radius to mass loss and increase  
     self.stellar_code.evolve_model(self.time)
-    self.channel_from_stellar.copy_attributes(["age", "mass","core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "wind_mass_loss_rate", "temperature"]) #"gyration_radius_sq"  
+    self.channel_from_stellar.copy_attributes(["age", "mass","core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "temperature"]) #"gyration_radius_sq"  
     self.update_stellar_parameters()
             
     Md_new = donor.mass
