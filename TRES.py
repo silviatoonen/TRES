@@ -1,3 +1,26 @@
+# changes compared to normal
+# no donor on the ms & hg (one timestep hg due to seba constructor) 
+# no rlof terms
+# initially synchronized orbits
+# extra exit statement on line 2188 after tres finds rlof (as we're trying to ignore that)
+# no gw or tidal terms on ms, well on hems & bh
+
+
+
+#in SeBa:
+# no instantaneous element evolution in main_sequence (to keep radius at zams)
+# as soon as hg is formed, make helium star
+#          star_transformation_story(Helium_Star);
+#          new helium_star(*this);
+#          return;
+# this gives discontinuous radius: -> but no problem (tides not taken into account at that point yet)
+#ms -> hg : in tres, if star is hg take previous radius 
+#hg -> helium star 
+#helium star constructor from hg: no lose_envelope_decent
+
+
+
+
 # to do 
 # min teken in mean anomaly
 
@@ -293,18 +316,18 @@ class Triple_Class:
         self.secular_code.parameters.include_octupole_terms = True        
         self.secular_code.parameters.include_inner_wind_terms = True
         self.secular_code.parameters.include_outer_wind_terms = True
-        self.secular_code.parameters.include_inner_RLOF_terms = True
-        self.secular_code.parameters.include_outer_RLOF_terms = True
+        self.secular_code.parameters.include_inner_RLOF_terms = False
+        self.secular_code.parameters.include_outer_RLOF_terms = False
         self.secular_code.parameters.include_magnetic_braking_terms = False # not tested
 
-        self.secular_code.parameters.include_inner_tidal_terms = True
-        self.secular_code.parameters.include_outer_tidal_terms = True
+        self.secular_code.parameters.include_inner_tidal_terms = False
+        self.secular_code.parameters.include_outer_tidal_terms = False
         
         self.secular_code.parameters.include_1PN_inner_terms = True
         self.secular_code.parameters.include_1PN_outer_terms = True
         self.secular_code.parameters.include_1PN_inner_outer_terms = False ### warning: probably broken
-        self.secular_code.parameters.include_25PN_inner_terms = True
-        self.secular_code.parameters.include_25PN_outer_terms = True
+        self.secular_code.parameters.include_25PN_inner_terms = False
+        self.secular_code.parameters.include_25PN_outer_terms = False
 
         self.secular_code.parameters.check_for_dynamical_stability = True
         self.secular_code.parameters.check_for_dynamical_stability_at_initialisation = True
@@ -403,8 +426,8 @@ class Triple_Class:
 
         self.previous_time = self.triple.time
         if stellar_system.is_star:
-            stellar_system.spin_angular_frequency = lang_spin_angular_frequency(stellar_system)
-#            stellar_system.spin_angular_frequency = corotating_spin_angular_frequency_binary(stellar_system.parent.semimajor_axis, self.get_mass(stellar_system.parent.child1), self.get_mass(stellar_system.parent.child2))
+#            stellar_system.spin_angular_frequency = lang_spin_angular_frequency(stellar_system)
+            stellar_system.spin_angular_frequency = corotating_spin_angular_frequency_binary(stellar_system.parent.semimajor_axis, self.get_mass(stellar_system.parent.child1), self.get_mass(stellar_system.parent.child2))
         else:
             self.initial_angular_frequency(stellar_system.child1)        
             self.initial_angular_frequency(stellar_system.child2)
@@ -966,6 +989,14 @@ class Triple_Class:
                 bin.child2.is_donor = True
             if star.radius >= Rl3:
                 star.is_donor = True
+                
+                
+            if bin.child1.stellar_type < 3|units.stellar_type:
+                bin.child1.is_donor = False
+            if bin.child2.stellar_type < 3|units.stellar_type: 
+                bin.child2.is_donor = False
+                
+                
 
             if star.is_donor and (bin.child1.is_donor or bin.child2.is_donor):
                 print('RLOF in inner and outer binary')
@@ -2108,6 +2139,15 @@ class Triple_Class:
         self.determine_mass_transfer_timescale()
         self.save_snapshot()  
         while self.triple.time<self.tend: 
+
+            if self.triple.child2.child1.stellar_type > 6|units.stellar_type:
+                self.secular_code.parameters.include_25PN_inner_terms = True
+                self.secular_code.parameters.include_25PN_outer_terms = True
+            if self.triple.child2.child1.stellar_type >6|units.stellar_type:
+                self.secular_code.parameters.include_inner_tidal_terms = False
+                self.secular_code.parameters.include_outer_tidal_terms = False
+
+
             if REPORT_TRIPLE_EVOLUTION or REPORT_DEBUG:
                 print('\n\n kozai timescale:', self.kozai_timescale(), self.triple.kozai_type, self.octupole_parameter())
                         
@@ -2132,6 +2172,14 @@ class Triple_Class:
 
                 self.stellar_code.evolve_model(self.triple.time)
                 self.channel_from_stellar.copy_attributes(["age", "mass","envelope_mass", "core_mass", "radius", "core_radius", "convective_envelope_radius",  "convective_envelope_mass", "stellar_type", "luminosity", "wind_mass_loss_rate", "temperature"]) #"gyration_radius_sq"  
+#                print(self.triple.child1.radius, self.triple.child2.child1.radius, self.triple.child2.child2.radius)
+                if self.triple.child1.stellar_type == 2|units.stellar_type:
+                   self.triple.child1.radius = self.triple.child1.previous_radius 
+                if self.triple.child2.child1.stellar_type == 2|units.stellar_type:
+                   self.triple.child2.child1.radius = self.triple.child2.child1.previous_radius 
+                if self.triple.child2.child2.stellar_type == 2|units.stellar_type:
+                   self.triple.child2.child2.radius = self.triple.child2.child2.previous_radius 
+#                print(self.triple.child1.radius, self.triple.child2.child1.radius, self.triple.child2.child2.radius)
                 self.update_stellar_parameters()     
          
                 successfull_step, nr_unsuccessfull, star_unsuccessfull = self.safety_check_time_step() 
