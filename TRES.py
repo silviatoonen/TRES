@@ -1608,6 +1608,20 @@ class Triple_Class:
         if stellar_system.is_star:
             if stellar_system.stellar_type != stellar_system.previous_stellar_type and stellar_system.stellar_type in stellar_types_SN_remnants:
                 stellar_system.spin_angular_frequency *= stellar_system.previous_moment_of_inertia_of_star/stellar_system.moment_of_inertia_of_star
+                if stellar_system.stellar_type == 13|units.stellar_type:#NS
+                    print('spin of NS after SN needs to be checked')
+                elif stellar_system.stellar_type == 14|units.stellar_type:#BH
+                    #Fuller & Ma, 2019, 881L, 1F:   a = Jc/GM2 = 1e-2
+                    J_spin = 0.01*constants.G *constants.previous_mass**2/constants.c
+                    v_spin = J_spin / stellar_system.moment_of_inertia
+                    R_s = 2*constants.G*stellar_system.mass/constants.c**2
+                    stellar_system.spin_angular_frequency = v_spin / R_s
+                    print('needs to be checked')
+                    exit(2)
+                elif stellar_system.stellar_type == 15|units.stellar_type:#massless particle
+                    print('something needs to happen... ')
+                    exit(2)
+
         else:
             self.adjust_spin_after_supernova(stellar_system.child1)        
             self.adjust_spin_after_supernova(stellar_system.child2)
