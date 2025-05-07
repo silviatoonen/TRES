@@ -2,8 +2,13 @@ from amuse.units import units, constants, quantities
 import numpy as np
 import sys 
 import scipy.integrate as integrate
+from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import griddata
 
 from TRES_options import REPORT_BINARY_EVOLUTION, REPORT_FUNCTION_NAMES, REPORT_MASS_TRANSFER_STABILITY
+from TRES_options import density_BA_in_TSMT, c_s_BA_in_TSMT, max_iter_TSMT, eps_TSMT
+from TRES_options import INCLUDE_GDF_IN_TSMT, model_I_GDF, INCLUDE_ECC_GDF_IN_TSMT, INCLUDE_CBD_IN_TSMT, INCLUDE_RETROGRADE_CBD_IN_TSMT, INCLUDE_OUTFLOW_CBD_IN_TSMT, INCLUDE_HYDR_IN_TSMT
+from TRES_options import minimum_time_step
 
 #constants
 numerical_error  = 1.e-6
@@ -854,11 +859,381 @@ def contact_system(bs, star1, star2, self):
 
 #-------------------------
 #functions for mass transfer in a multiple / triple
+#silvia deal with units
+#G = 6.6743015*10**(-8)       # gravitational constant
+#c = 2.99792458*10**10            # speed of light
+
+def CBD_check(m_donor, m_accretor, a_outer, e_outer, a_inner, e_inner):
+    # Condition to check whether a CBD should form  
+    if not INCLUDE_CBD_IN_TSMT:
+        return False, 0
+      
+    q_out = m_donor/m_accretor
+    R_CBD = 0.0425*a_outer*(1-e_outer)*(1/q_out*(1+(1/q_out)))**(0.25)
+    CBD = False
+    if a_inner*(1+e_inner) < R_CBD:
+        CBD = True
+    CBD_frac = a_inner*(1+e_inner) / R_CBD
+    return CBD, CBD_frac
+
+def calculate_adot_GW(a, e, m1, m2):
+    # Semi-major axis evolution due to gravitational waves, from Peters (1964)
+    alpha = (a)**3*(1-e**2)**(7/2)
+    beta = 64/5*constants.G**3*m1*m2*(m1+m2)/constants.c**5
+    gamma = 1 + (e**2)*73/24 + (e**4)*37/96
+    adot = -beta*gamma/alpha
+    return adot
+    
+def calculate_edot_GW(a, e, m1, m2):
+    # Circularization of orbit due to gravitational waves, from Peters (1964)
+    alpha = (a)**4*(1-e**2)**(5/2)
+    beta = 304/15*e*constants.G**3*m1*m2*(m1+m2)/constants.c**5
+    gamma = 1 + e**2*121/304
+    edot = -beta*gamma/alpha
+    return edot
+ 
+def calculate_adot_GDF(a, e, q, m1, m2, mbin, CBD):
+    # Semi-major axis evolution due to gaseous drag forces
+
+    if CBD: # if a CBD has formed, we assume the binary orbit is clear of gas
+        return 0|units.RSun/units.Myr
+
+    v_orb = np.sqrt(constants.G*mbin/a) # orbital velocity of the binary
+    mach = v_orb / c_s_BA_IN_TMT # Mach number (for simplicity omitted dependency on the true anomaly)
+
+    rmax = 2*a
+    rmin = a/10
+    if model_I_GDF == 'Ostriker99':
+        I = self.Ostriker(mach, rmax, rmin)
+    elif model_I_GDF == 'Kim08':
+        I = self.Kim08(mach, rmin)
+    
+    integral_da = 2*np.pi
+
+    n = np.sqrt(constants.G*mbin/a**3)
+    mu = m1*m2/mbin
+    adot_GDF = 0|units.RSun/units.Myr
+    adot_hydr = 0|units.RSun/units.Myr
+    
+    if (INCLUDE_GDF_IN_TSMT=='true'): # Contribution of gravitational gas drag
+        # Equation B.6 from Kummer et al. (2024)
+        if INCLUDE_ECC_GDF_IN_TSMT == 'true': # Gas drag in eccentric binaries
+            integral_da = integrate.quad(self.integrand_da_gdf, 0, 2*np.pi, args=(self.e_in,))[0]
+        A0_gdf = -4*np.pi*constants.G**2*density_BA_in_TSMT*I
+        adot_GDF = A0_gdf * (1-e**2)**2*mbin**2/(np.pi*n**3*a**2*mu) * (1/q**2 + q**2) * integral_da
+        
+    if INCLUDE_HYDR_IN_TSMT=='true': # Contribution of hydrodynamic gas drag
+        if INCLUDE_ECC_GDF_IN_TSMT == 'true': # Gas drag in eccentric binaries
+            integral_da = integrate.quad(self.integrand_da_hydr, 0, 2*np.pi, args=(self.e_in,))[0]
+        A0_hydr = -0.5*hydro_drag_coefficient_in_TSMT*np.pi*density_BA_in_TSMT
+        if self.compact_object == True:
+            r1 = self.Schwarzschild_radius(m1)
+            r2 = self.Schwarzschild_radius(m2)
+        else:
+            r1 = self.r1
+            r2 = self.r2
+        adot_hydr = A0_hydr * n*a**2/(np.pi*mu*mbin**2) * (r1**2*m2**2+r2**2*m1**2) * integral_da
+
+    adot = adot_GDF + adot_hydr
+
+    return adot
+    
+    
+def calculate_edot_GDF(a, e, q, m1, m2, mbin, CBD): #silvia this doesn't seem to be a dot is this de or edot?
+    # Evolution of eccentricity due to gas drag (Rozner & Perets 2022)
+
+    if not INCLUDE_ECC_GDF_IN_TSMT: 
+        return 0|1./units.Myr    
+    if CBD: # if a CBD has formed, we assume the binary orbit is clear of gas
+        return 0|1./units.Myr
+   
+    # Inspiral due to gas drag
+    v_orb = np.sqrt(constants.G*mbin/a)
+    mach = v_orb / c_s_BA_IN_TMT
+
+    rmax = 2*a
+    rmin = a/10
+    if model_I_GDF == 'Ostriker99':
+        I = self.Ostriker(mach, rmax, rmin)
+    elif model_I_GDF == 'Kim08':
+        I = self.Kim08(mach, rmin)
+    
+    A_0 = -4*np.pi*constants.G**2*density_BA_in_TSMT*I
+    n = np.sqrt(constants.G*mbin/a**3)
+    mu = m1*m2/mbin
+    edot_GDF = 0|1./units.Myr
+    edot_hydr = 0|1./units.Myr
+    
+    if (INCLUDE_GDF_IN_TSMT=='true'): # Contribution of gravitational gas drag
+        # Equation B.9 from Kummer et al. (2024)
+        if INCLUDE_ECC_GDF_IN_TSMT == 'true': # Gravitational gas drag in eccentric binaries
+            integral_de_gdf = integrate.quad(self.integrand_de_gdf, 0, 2*np.pi, args=(self.e_in,))[0]
+        A0_gdf = -4*np.pi*constants.G**2*density_BA_in_TSMT*I
+        edot_GDF = A0_gdf * (1-e**2)**3*mbin**2/(np.pi*n**3*a**3*mu) * (1/q**2 + q**2) * integral_de_gdf
+
+    if INCLUDE_HYDR_IN_TSMT=='true': # contribution of hydrodynamic gas drag
+        if INCLUDE_ECC_GDF_IN_TSMT == 'true': # Gravitational gas drag in eccentric binaries
+            integral_de_hydr = integrate.quad(self.integrand_de_hydr, 0, 2*np.pi, args=(self.e_in,))[0]
+        A0_hydr = -0.5*hydro_drag_coefficient_in_TSMT*np.pi*density_BA_in_TSMT
+        if self.compact_object == True:
+            r1 = self.Schwarzschild_radius(m1)
+            r2 = self.Schwarzschild_radius(m2)
+        else:
+            r1 = self.r1
+            r2 = self.r2
+        edot_hydr = A0_hydr * n*a*(1-e**2)/(np.pi*mu*mbin**2) * (r1**2*m2**2+r2**2*m1**2) * integral_de_hydr
+    
+    edot = edot_GDF + edot_hydr
+    
+    return edot
+
+def calculate_adot_CBD(a, e, q, incl, mbin, mdot_bin, CBD, self):
+    # Semi-major axis evolution due to torques between CBD and inner binary.
+
+    if not CBD:
+        return 0|units.RSun/units.Myr
+
+    if (incl <= np.pi/2) | (INCLUDE_RETROGRADE_CBD_IN_TSMT != 'true'): # Adopted values from Siwek et al. (2023)
+        try:
+            # If e>0.8 we don't extrapolate, but use edge value
+            factor = self.intp_grid_a((q, min(e, 0.8)))
+        except AttributeError:
+            # Interpolated values for a_dot and e_dot in CBD from Siwek et al. (2023)
+            # We define the interpolator at the start so that we only have to do it once (saves a lot of time)
+            self.intp_grid_a, _, _, _ = grid_interpolation(param='a')
+            self.intp_grid_e, _, _, _ = grid_interpolation(param='e')
+
+            # If e>0.8 we don't extrapolate, but use edge value
+            factor = self.intp_grid_a((q, min(e, 0.8)))
+
+    elif (incl > np.pi/2) & (incl <= np.pi): # Retrograde orbits adopted from Tiede & D'Orazio (2023)
+        factor = -10
+    else:
+        print('Non-physical inclination: ', incl)
+    
+    #floris: shouldn't the conservatinveness be included here?
+    adot = factor * a * mdot_bin / (mbin)
+
+    return adot
+
+
+def calculate_edot_CBD(e, q, incl, mbin, mdot_bin, CBD, self):
+    # Evolution of the eccentricity due to CBD torques
+
+    if not CBD:
+        return 0|1./units.Myr
+
+    if (incl <= np.pi/2) | (INCLUDE_RETROGRADE_CBD_IN_TSMT != 'true'): # Adopted values from Siwek et al. (2023)
+        try:
+            # If e>0.8 we don't extrapolate, but use edge value
+            factor = self.intp_grid_e((q, min(e, 0.8)))
+        except AttributeError:
+            # Interpolated values for a_dot and e_dot in CBD from Siwek et al. (2023)
+            # We define the interpolator at the start so that we only have to do it once (saves a lot of time)
+            self.intp_grid_a, _, _, _ = grid_interpolation(param='a')
+            self.intp_grid_e, _, _, _ = grid_interpolation(param='e')
+
+            # If e>0.8 we don't extrapolate, but use edge value
+            factor = self.intp_grid_e((q, min(e, 0.8)))
+    elif (incl > np.pi/2) & (incl <= np.pi): # Retrograde orbits adopted from Tiede & D'Orazio (2023)
+        if e <= 0.1:
+            factor = 30*e
+        else:
+            factor = 2
+    else:
+        print('Non-physical inclination: ', incl)
+    #floris: shouldn't the conservatinveness be included here?
+    edot = factor * mdot_bin / mbin
+    
+    return edot
+
+def grid_interpolation(param):
+        # Values for a_dot and e_dot in systems with a CBD. Data from Siwek et al. (2023)
+        
+        adot_data = {'e=0.00_q=0.10_ab_dot_ab_sum_grav_acc': -1.2588927484346075, 'e=0.00_q=0.20_ab_dot_ab_sum_grav_acc': -0.7030327450679021, 'e=0.00_q=0.30_ab_dot_ab_sum_grav_acc': 1.1529081340202179, 'e=0.00_q=0.40_ab_dot_ab_sum_grav_acc': 1.277961324597141, 'e=0.00_q=0.50_ab_dot_ab_sum_grav_acc': 1.4195367749323786, 'e=0.00_q=0.60_ab_dot_ab_sum_grav_acc': 1.5680280340458284, 'e=0.00_q=0.70_ab_dot_ab_sum_grav_acc': 1.6615004112961926, 'e=0.00_q=0.80_ab_dot_ab_sum_grav_acc': 1.7087208207988906, 'e=0.00_q=0.90_ab_dot_ab_sum_grav_acc': 1.7314879550329025, 'e=0.00_q=1.00_ab_dot_ab_sum_grav_acc': 1.7534726250735466, 'e=0.02_q=1.00_ab_dot_ab_sum_grav_acc': 1.7002876283117645, 'e=0.03_q=1.00_ab_dot_ab_sum_grav_acc': 1.6081955329524986, 'e=0.04_q=1.00_ab_dot_ab_sum_grav_acc': 1.5595213761160105, 'e=0.05_q=0.10_ab_dot_ab_sum_grav_acc': -3.33794314967003, 'e=0.05_q=0.20_ab_dot_ab_sum_grav_acc': -0.4878574634899152, 'e=0.05_q=0.30_ab_dot_ab_sum_grav_acc': 0.8744350518418839, 'e=0.05_q=0.40_ab_dot_ab_sum_grav_acc': 1.1370063804234058, 'e=0.05_q=0.50_ab_dot_ab_sum_grav_acc': 1.4126349071380913, 'e=0.05_q=0.60_ab_dot_ab_sum_grav_acc': 1.4965637338473716, 'e=0.05_q=0.70_ab_dot_ab_sum_grav_acc': 1.5203706193024829, 'e=0.05_q=0.80_ab_dot_ab_sum_grav_acc': 1.5421167860902194, 'e=0.05_q=0.90_ab_dot_ab_sum_grav_acc': 1.5485050264876217, 'e=0.05_q=1.00_ab_dot_ab_sum_grav_acc': 1.540844661306394, 'e=0.10_q=0.10_ab_dot_ab_sum_grav_acc': -5.0571681159957915, 'e=0.10_q=0.20_ab_dot_ab_sum_grav_acc': -1.9339580701250532, 'e=0.10_q=0.30_ab_dot_ab_sum_grav_acc': -2.251490562749219, 'e=0.10_q=0.40_ab_dot_ab_sum_grav_acc': -1.2215179723238372, 'e=0.10_q=0.50_ab_dot_ab_sum_grav_acc': -0.8367284116270806, 'e=0.10_q=0.60_ab_dot_ab_sum_grav_acc': -0.8097620665737617, 'e=0.10_q=0.70_ab_dot_ab_sum_grav_acc': -0.8886922901256215, 'e=0.10_q=0.80_ab_dot_ab_sum_grav_acc': -0.9604008726655703, 'e=0.10_q=0.90_ab_dot_ab_sum_grav_acc': -0.9214870630601979, 'e=0.10_q=1.00_ab_dot_ab_sum_grav_acc': -0.9809361330347988, 'e=0.20_q=0.10_ab_dot_ab_sum_grav_acc': 1.0424403269129217, 'e=0.20_q=0.20_ab_dot_ab_sum_grav_acc': -0.19939941769747618, 'e=0.20_q=0.30_ab_dot_ab_sum_grav_acc': -1.953628426276366, 'e=0.20_q=0.40_ab_dot_ab_sum_grav_acc': -0.6486894781725229, 'e=0.20_q=0.50_ab_dot_ab_sum_grav_acc': -0.20949241199853907, 'e=0.20_q=0.60_ab_dot_ab_sum_grav_acc': -0.4546503025120044, 'e=0.20_q=0.70_ab_dot_ab_sum_grav_acc': -0.49332138407726533, 'e=0.20_q=0.80_ab_dot_ab_sum_grav_acc': -0.7246914681996611, 'e=0.20_q=0.90_ab_dot_ab_sum_grav_acc': -1.0640292985942033, 'e=0.20_q=1.00_ab_dot_ab_sum_grav_acc': -1.364061619122991, 'e=0.30_q=0.10_ab_dot_ab_sum_grav_acc': 3.503605883308187, 'e=0.30_q=0.20_ab_dot_ab_sum_grav_acc': 0.9028435325239866, 'e=0.30_q=0.30_ab_dot_ab_sum_grav_acc': -0.21607001774721982, 'e=0.30_q=0.40_ab_dot_ab_sum_grav_acc': -2.4865544311318644, 'e=0.30_q=0.50_ab_dot_ab_sum_grav_acc': -2.4247811179306824, 'e=0.30_q=0.60_ab_dot_ab_sum_grav_acc': -2.3305411398131177, 'e=0.30_q=0.70_ab_dot_ab_sum_grav_acc': -2.3456293472156124, 'e=0.30_q=0.80_ab_dot_ab_sum_grav_acc': -2.6127293026279035, 'e=0.30_q=0.90_ab_dot_ab_sum_grav_acc': -4.048571604304598, 'e=0.30_q=1.00_ab_dot_ab_sum_grav_acc': -4.850313932871829, 'e=0.40_q=0.10_ab_dot_ab_sum_grav_acc': 3.806236733517315, 'e=0.40_q=0.20_ab_dot_ab_sum_grav_acc': 2.7194712808229418, 'e=0.40_q=0.30_ab_dot_ab_sum_grav_acc': -1.4543339398009754, 'e=0.40_q=0.40_ab_dot_ab_sum_grav_acc': -2.5910064909814245, 'e=0.40_q=0.50_ab_dot_ab_sum_grav_acc': -2.2130570681981876, 'e=0.40_q=0.60_ab_dot_ab_sum_grav_acc': -3.1159071887554943, 'e=0.40_q=0.70_ab_dot_ab_sum_grav_acc': -5.274646166880953, 'e=0.40_q=0.80_ab_dot_ab_sum_grav_acc': -6.2079834967683105, 'e=0.40_q=0.90_ab_dot_ab_sum_grav_acc': -6.3075868066968255, 'e=0.40_q=1.00_ab_dot_ab_sum_grav_acc': -6.14002468104283, 'e=0.50_q=0.10_ab_dot_ab_sum_grav_acc': 4.055637000482147, 'e=0.50_q=0.20_ab_dot_ab_sum_grav_acc': 2.65874061811691, 'e=0.50_q=0.30_ab_dot_ab_sum_grav_acc': -0.9603773405190716, 'e=0.50_q=0.40_ab_dot_ab_sum_grav_acc': -2.8808002208052392, 'e=0.50_q=0.50_ab_dot_ab_sum_grav_acc': -3.961916226182325, 'e=0.50_q=0.60_ab_dot_ab_sum_grav_acc': -4.377272084304601, 'e=0.50_q=0.70_ab_dot_ab_sum_grav_acc': -4.171980234634676, 'e=0.50_q=0.80_ab_dot_ab_sum_grav_acc': 0.598365917841959, 'e=0.50_q=0.90_ab_dot_ab_sum_grav_acc': 0.8641031382970823, 'e=0.50_q=1.00_ab_dot_ab_sum_grav_acc': 0.877397138454011, 'e=0.60_q=0.10_ab_dot_ab_sum_grav_acc': 3.157706904114237, 'e=0.60_q=0.20_ab_dot_ab_sum_grav_acc': -1.2873737083279844, 'e=0.60_q=0.30_ab_dot_ab_sum_grav_acc': -2.4379105283348284, 'e=0.60_q=0.40_ab_dot_ab_sum_grav_acc': -1.4704287385170687, 'e=0.60_q=0.50_ab_dot_ab_sum_grav_acc': -1.297418566336738, 'e=0.60_q=0.60_ab_dot_ab_sum_grav_acc': -0.2837682548094211, 'e=0.60_q=0.70_ab_dot_ab_sum_grav_acc': 0.30322709438863127, 'e=0.60_q=0.80_ab_dot_ab_sum_grav_acc': 0.5201687004910162, 'e=0.60_q=0.90_ab_dot_ab_sum_grav_acc': 0.4780718143406398, 'e=0.60_q=1.00_ab_dot_ab_sum_grav_acc': 0.376879952712717, 'e=0.80_q=0.10_ab_dot_ab_sum_grav_acc': -5.366299777195529, 'e=0.80_q=0.20_ab_dot_ab_sum_grav_acc': -6.498385865377792, 'e=0.80_q=0.30_ab_dot_ab_sum_grav_acc': -3.3067963024144644, 'e=0.80_q=0.40_ab_dot_ab_sum_grav_acc': -3.480897204885583, 'e=0.80_q=0.50_ab_dot_ab_sum_grav_acc': -3.521311997035641, 'e=0.80_q=0.60_ab_dot_ab_sum_grav_acc': -2.746699994636253, 'e=0.80_q=0.70_ab_dot_ab_sum_grav_acc': -2.956680828764333, 'e=0.80_q=0.80_ab_dot_ab_sum_grav_acc': -3.1657741705136586, 'e=0.80_q=0.90_ab_dot_ab_sum_grav_acc': -3.001088696745606, 'e=0.80_q=1.00_ab_dot_ab_sum_grav_acc': -2.892418724373073}
+        
+        edot_data = {'e=0.00_q=0.10_eb_dot_sum_grav_acc': 3.488635249010523e-05, 'e=0.00_q=0.20_eb_dot_sum_grav_acc': 7.442294134508703e-06, 'e=0.00_q=0.30_eb_dot_sum_grav_acc': 1.6933772285208686e-05, 'e=0.00_q=0.40_eb_dot_sum_grav_acc': 9.298533107418273e-06, 'e=0.00_q=0.50_eb_dot_sum_grav_acc': -8.878210719378644e-06, 'e=0.00_q=0.60_eb_dot_sum_grav_acc': 1.9557428804050647e-05, 'e=0.00_q=0.70_eb_dot_sum_grav_acc': 1.0281107471336626e-05, 'e=0.00_q=0.80_eb_dot_sum_grav_acc': -3.088926860884904e-05, 'e=0.00_q=0.90_eb_dot_sum_grav_acc': -8.539577730279929e-07, 'e=0.00_q=1.00_eb_dot_sum_grav_acc': 1.871404863945317e-05, 'e=0.02_q=1.00_eb_dot_sum_grav_acc': 0.3743280300991139, 'e=0.03_q=1.00_eb_dot_sum_grav_acc': 0.47382997856152176, 'e=0.04_q=1.00_eb_dot_sum_grav_acc': 0.5355490843846645, 'e=0.05_q=0.10_eb_dot_sum_grav_acc': -0.4684303050118692, 'e=0.05_q=0.20_eb_dot_sum_grav_acc': 0.02263375780103669, 'e=0.05_q=0.30_eb_dot_sum_grav_acc': 0.13470403236369005, 'e=0.05_q=0.40_eb_dot_sum_grav_acc': 0.5427739657742825, 'e=0.05_q=0.50_eb_dot_sum_grav_acc': 0.7735635300373794, 'e=0.05_q=0.60_eb_dot_sum_grav_acc': 1.029296443982413, 'e=0.05_q=0.70_eb_dot_sum_grav_acc': 0.9168445555194249, 'e=0.05_q=0.80_eb_dot_sum_grav_acc': 0.8126672238205267, 'e=0.05_q=0.90_eb_dot_sum_grav_acc': 0.7476545394168524, 'e=0.05_q=1.00_eb_dot_sum_grav_acc': 0.692091816898143, 'e=0.10_q=0.10_eb_dot_sum_grav_acc': 1.5504011121815902, 'e=0.10_q=0.20_eb_dot_sum_grav_acc': 1.8183572855353745, 'e=0.10_q=0.30_eb_dot_sum_grav_acc': 3.90952703020401, 'e=0.10_q=0.40_eb_dot_sum_grav_acc': 4.175613133752098, 'e=0.10_q=0.50_eb_dot_sum_grav_acc': 4.562835763640335, 'e=0.10_q=0.60_eb_dot_sum_grav_acc': 4.911391593859991, 'e=0.10_q=0.70_eb_dot_sum_grav_acc': 5.068415905856453, 'e=0.10_q=0.80_eb_dot_sum_grav_acc': 5.340847000214718, 'e=0.10_q=0.90_eb_dot_sum_grav_acc': 5.274270071209753, 'e=0.10_q=1.00_eb_dot_sum_grav_acc': 5.406401814667789, 'e=0.20_q=0.10_eb_dot_sum_grav_acc': 0.6488927191944633, 'e=0.20_q=0.20_eb_dot_sum_grav_acc': 2.1914972004333824, 'e=0.20_q=0.30_eb_dot_sum_grav_acc': 5.669103545016428, 'e=0.20_q=0.40_eb_dot_sum_grav_acc': 3.3710710541138145, 'e=0.20_q=0.50_eb_dot_sum_grav_acc': 3.8298553045887007, 'e=0.20_q=0.60_eb_dot_sum_grav_acc': 4.986611934218368, 'e=0.20_q=0.70_eb_dot_sum_grav_acc': 5.557890572373414, 'e=0.20_q=0.80_eb_dot_sum_grav_acc': 6.078860672454515, 'e=0.20_q=0.90_eb_dot_sum_grav_acc': 6.707204607122081, 'e=0.20_q=1.00_eb_dot_sum_grav_acc': 7.188775573084456, 'e=0.30_q=0.10_eb_dot_sum_grav_acc': -1.7896526848136787, 'e=0.30_q=0.20_eb_dot_sum_grav_acc': 0.07757532678305445, 'e=0.30_q=0.30_eb_dot_sum_grav_acc': 0.19236677200001306, 'e=0.30_q=0.40_eb_dot_sum_grav_acc': 2.5882196798559822, 'e=0.30_q=0.50_eb_dot_sum_grav_acc': 3.362923747952593, 'e=0.30_q=0.60_eb_dot_sum_grav_acc': 4.5230423777706354, 'e=0.30_q=0.70_eb_dot_sum_grav_acc': 5.268203818640236, 'e=0.30_q=0.80_eb_dot_sum_grav_acc': 6.124410529143764, 'e=0.30_q=0.90_eb_dot_sum_grav_acc': 8.223391449350354, 'e=0.30_q=1.00_eb_dot_sum_grav_acc': 9.521288212023046, 'e=0.40_q=0.10_eb_dot_sum_grav_acc': -4.184212679532789, 'e=0.40_q=0.20_eb_dot_sum_grav_acc': -1.953532560321229, 'e=0.40_q=0.30_eb_dot_sum_grav_acc': -0.41337492723649594, 'e=0.40_q=0.40_eb_dot_sum_grav_acc': 0.24481350668945567, 'e=0.40_q=0.50_eb_dot_sum_grav_acc': 1.5048676028128227, 'e=0.40_q=0.60_eb_dot_sum_grav_acc': 3.543842173457423, 'e=0.40_q=0.70_eb_dot_sum_grav_acc': 5.656875229581482, 'e=0.40_q=0.80_eb_dot_sum_grav_acc': 6.5113173252052, 'e=0.40_q=0.90_eb_dot_sum_grav_acc': 7.0991178999755995, 'e=0.40_q=1.00_eb_dot_sum_grav_acc': 6.933509837783115, 'e=0.50_q=0.10_eb_dot_sum_grav_acc': -4.792735124472431, 'e=0.50_q=0.20_eb_dot_sum_grav_acc': -3.9475753656667734, 'e=0.50_q=0.30_eb_dot_sum_grav_acc': -2.7378009846402596, 'e=0.50_q=0.40_eb_dot_sum_grav_acc': -1.7096071112614364, 'e=0.50_q=0.50_eb_dot_sum_grav_acc': -1.7541323255788448, 'e=0.50_q=0.60_eb_dot_sum_grav_acc': -0.03805751777859892, 'e=0.50_q=0.70_eb_dot_sum_grav_acc': 0.5437329180055392, 'e=0.50_q=0.80_eb_dot_sum_grav_acc': -1.7636007674516854, 'e=0.50_q=0.90_eb_dot_sum_grav_acc': -1.8381672944153815, 'e=0.50_q=1.00_eb_dot_sum_grav_acc': -1.8569328012861426, 'e=0.60_q=0.10_eb_dot_sum_grav_acc': -5.908017840443841, 'e=0.60_q=0.20_eb_dot_sum_grav_acc': -4.605516831316371, 'e=0.60_q=0.30_eb_dot_sum_grav_acc': -3.9505394655778505, 'e=0.60_q=0.40_eb_dot_sum_grav_acc': -2.839562660147846, 'e=0.60_q=0.50_eb_dot_sum_grav_acc': -2.3870738928579285, 'e=0.60_q=0.60_eb_dot_sum_grav_acc': -2.2136858045854977, 'e=0.60_q=0.70_eb_dot_sum_grav_acc': -2.1397409162831007, 'e=0.60_q=0.80_eb_dot_sum_grav_acc': -2.0835290635783794, 'e=0.60_q=0.90_eb_dot_sum_grav_acc': -2.129030745573739, 'e=0.60_q=1.00_eb_dot_sum_grav_acc': -2.122080860608072, 'e=0.80_q=0.10_eb_dot_sum_grav_acc': -7.378638265729229, 'e=0.80_q=0.20_eb_dot_sum_grav_acc': -5.377888608443883, 'e=0.80_q=0.30_eb_dot_sum_grav_acc': -3.435554307708856, 'e=0.80_q=0.40_eb_dot_sum_grav_acc': -2.6144355479495367, 'e=0.80_q=0.50_eb_dot_sum_grav_acc': -2.155093066314607, 'e=0.80_q=0.60_eb_dot_sum_grav_acc': -1.9869900684709847, 'e=0.80_q=0.70_eb_dot_sum_grav_acc': -1.8769639616864813, 'e=0.80_q=0.80_eb_dot_sum_grav_acc': -1.6840438069544894, 'e=0.80_q=0.90_eb_dot_sum_grav_acc': -1.6894204612697994, 'e=0.80_q=1.00_eb_dot_sum_grav_acc': -1.818735569936334}
+    
+    
+        q = np.arange(0.1, 1.1, 0.1)
+        e = np.array([0.0, 0.02, 0.03, 0.04, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8])
+        Q, E = np.meshgrid(q, e)
+        
+        if param == 'a':
+            data = list(adot_data.values())[:10] + list(adot_data.values())[13:]
+            data_2d = np.array(data).reshape(9,10)
+            extra_points = [np.nan]*27 + list(adot_data.values())[10:13]
+        elif param == 'e':
+            data = list(edot_data.values())[:10] + list(edot_data.values())[13:]
+            data_2d = np.array(data).reshape(9,10)
+            extra_points = [np.nan]*27 + list(edot_data.values())[10:13]
+        else:
+            print("Wrong interpolation parameter")
+            return
+            
+
+        # The grid is not regular, so we insert nan for the missing values
+        extra_2d = np.array(extra_points).reshape(10,3).T
+        combined_data = np.insert(data_2d, 1, extra_2d, axis=0)
+        nan_mask = np.isnan(combined_data)
+        nan_indices = np.isnan(combined_data)
+        
+        # We first fill the missing grid values by interpolating with scipy griddata (unfortunately RegularGridInterpolator does not work with irregular grids)
+        indices_to_interpolate = np.where(nan_indices.flatten())
+        row_indices, col_indices = np.unravel_index(indices_to_interpolate, combined_data.shape)
+        points_to_interpolate = np.column_stack((Q.flatten(), E.flatten()))[indices_to_interpolate]
+        valid_data_mask = ~np.isnan(combined_data.flatten())
+        interpolated_values = griddata((Q.flatten()[valid_data_mask], E.flatten()[valid_data_mask]),
+                                       combined_data.flatten()[valid_data_mask],
+                                       points_to_interpolate, method='linear')
+
+        combined_data[row_indices, col_indices] = interpolated_values
+        
+        # Finally, we set up the interpolator
+        interpolator = RegularGridInterpolator((q, e), combined_data.T, method='linear', bounds_error=False)
+
+        return interpolator, Q, E, combined_data
+
+def calculate_adot_AM(a, m_donor, m_acc, mass_transfer_rate, conservative_CBD=True, iso=False):
+    # Evolution of the outer orbit due to mass transfer based on angular momentum balance
+
+#    if (iso == True) & ((CBD == False) | (conservative_CBD == True)):#why adot_AM is 0 in this case? Silvia
+#        return 0
+
+    #beta: accretion efficiency
+    #gamma: angular momentum loss mode
+    if conservative_CBD == True: # Conservative mass transfer
+        beta = 1
+        gamma = 0
+    elif iso == True: # Isotropic mass ejection
+        beta = 0
+        gamma = m_acc / m_donor
+    else: # Isotropic re-emission
+        beta = 0
+        gamma = m_donor / m_acc
+    
+    #note that mass_transfer_rate is defined to be positive here, therefore no extra minus sign  #check this, floris changes the minus sign in def derivatives  
+    adot = 2 * a * mass_transfer_rate/m_donor * (1-beta*m_donor/m_acc - (1-beta)*(gamma+0.5)*m_donor/(m_donor+m_acc)) 
+    
+    #why work with da, why not a_new? silvia 
+    return adot
+
+
+def accretion_rate_onto_binary(mass_transfer_rate, conservative=True, mdot=0|units.MSun/units.yr):
+    # Change in mass of inner binary due to mass accretion
+    if (conservative == True) & (mdot == 0|units.MSun/units.yr):
+        mdot = mass_transfer_rate
+    elif conservative == True: # In case dm was already specified, possibly needed in future to test mt stability
+        mdot = mdot
+    else:
+        mdot = 0|units.MSun/units.Myr #for now assume no accretion at all        
+        
+    return mdot
+
+ 
+def derivatives(params, incl, mass_transfer_rate, CBD, conservative_CBD, self):
+   # Function that calculates the time-derivatives of the system's properties
+   # params = [a_in, e_in, mbin, m1, m2, q_in]
+
+   # Constrain unphysical values for the properties of the system
+   if params[0] < 0|units.RSun:
+       params[0] = 1e-5|units.RSun
+   if params[1] < 0:
+       params[1] = 0
+   if params[5] > 1:
+       params[5] = 1/params[5]
+
+   adot_GDF = calculate_adot_GDF(params[0], params[1], params[5], params[3], params[4], params[2], CBD)
+   adot_CBD = calculate_adot_CBD(params[0], params[1], params[5], incl, params[2], mass_transfer_rate, CBD, self)
+   adot_GW = calculate_adot_GW(params[0], params[1], params[3], params[4])
+#   print(adot_GDF, adot_GW, adot_CBD)
+   adot_in = adot_GDF + adot_CBD + adot_GW
+   
+   GW = False
+   if abs(adot_GW) > max(abs(adot_GDF), abs(adot_CBD)):
+        GW = True
+   
+   edot_GDF = calculate_edot_GDF(params[0], params[1], params[5], params[3], params[4], params[2], CBD)
+   edot_CBD = calculate_edot_CBD(params[1], params[5], incl, params[2], mass_transfer_rate, CBD, self)
+   edot_GW = calculate_edot_GW(params[0], params[1], params[3], params[4])
+#   print(edot_GDF, edot_GW, edot_CBD)
+   edot_in = edot_GDF + edot_CBD + edot_GW
+
+   mdot_bin = 0|units.MSun/units.yr
+   mdot1 = 0|units.MSun/units.yr
+   mdot2 = 0|units.MSun/units.yr
+   qdot_in = 0|1./units.yr
+   if conservative_CBD:
+       mdot_bin = accretion_rate_onto_binary(mass_transfer_rate, conservative_CBD)
+       mdot1 = mdot_bin * 1/(1+params[5]**(-0.9))
+       mdot2 = mdot_bin * params[5]**(-0.9)/(1+params[5]**(-0.9))
+#       qdot_in = (params[4] + mdot2)/(params[3] + mdot1) - params[4]/params[3] # dq is q_new - q_old
+       qdot_in = ((params[4] + mdot2*(1e-5|units.Myr))/(params[3] + mdot1*(1e-5|units.Myr)) - params[4]/params[3])/(1e-5|units.Myr) # dq is q_new - q_old
+#       qdot_in = (params[4] + mdot2*time_step)/(params[3] + mdot1*time_step) - params[4]/params[3]/time_step # dq is q_new - q_old #floris
+
+   return np.array([adot_in, edot_in, mdot_bin, mdot1, mdot2, qdot_in]), GW
+        
+def RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt, self):
+    # Fourth order Runge-Kutta method
+    # params = [a_in, e_in, mbin, m1, m2, q_in]
+    
+    dt_vec = np.array([dt,dt,dt,dt,dt,dt])   
+    k1, GW1 = derivatives(params, incl, mass_transfer_rate, CBD, conservative_CBD, self)
+    k2, GW2 = derivatives(params + 0.5 * k1 * dt_vec, incl, mass_transfer_rate, CBD, conservative_CBD, self)
+    k3, GW3 = derivatives(params + 0.5 * k2 * dt_vec, incl, mass_transfer_rate, CBD, conservative_CBD, self)
+    k4, GW4 = derivatives(params + k3 * dt_vec, incl, mass_transfer_rate, CBD, conservative_CBD, self)
+    
+    GW = False
+    if GW1 or GW2 or GW3 or GW4:
+        GW = True #should this just be GW4? silvia - neither check after final state
+        
+    return params + (dt_vec / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4), GW
+
+
+def adaptive_RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt, self):
+    # Function that adaptively determines the new time step
+
+    iter = 1
+    GW = False
+
+    while iter < max_iter_TSMT:
+        y_single, GW1 = RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt, self)
+        y_double, GW2 = RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt/2, self)
+        y_double, GW3 = RK4_step(y_double, incl, mass_transfer_rate, CBD, conservative_CBD, dt/2, self)
+        if GW1 or GW2 or GW3:
+            GW = True #silvia: is only GW3 needed?
+
+        eps_rel = abs((y_double - y_single)/y_double)
+        eps_rel = max(eps_rel)
+        if eps_rel == 0: # To avoid numerical complications
+            eps_rel = eps_TSMT
+        dt_new = dt*(eps_TSMT/eps_rel)**0.2
+        dt_new = max(dt_new, 1)
+    
+        # Check if the difference between y_single and y_double is within a certain error
+        if (eps_rel < eps_TSMT) | (iter >= max_iter_TSMT):
+#            if y_double[7] < 0: # In case the envelope mass of the tertiary becomes negative
+#                dt = params[7] / abs(y_double[7]-params[7]) * dt
+#                y_double, GW1 = RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt/2, self)
+#                y_double, GW2 = RK4_step(y_double, incl, mass_transfer_rate, CBD, conservative_CBD, dt/2, self)
+            params = y_double
+            dt = dt_new
+            if GW1 or GW2:
+                GW = True #silvia: is only GW2 needed?
+            return params, dt, GW
+        else:
+            iter += 1
+            dt = dt_new
+            GW = False
+            
 
 def triple_stable_mass_transfer(bs, donor, accretor, self):
-    # mass transfer of both inner and outer orbit is not yet considered here
-    
-    # orbital evolution is being taken into account in secular_code        
+    #I"m assuming tres wants to do one nuclear or thermal timestep here. -> therefore tertiary only updated once
+    #do I want small timesteps for the outer orbit, or do it in one go? -> problem if it is eccentric -> can we make a initial-final orbit equation for ecc mt? 
+
+    # for now full evolution is done in TRES, no secular evolution
+    self.instantaneous_evolution = True #skip secular evolution    
+
     if REPORT_FUNCTION_NAMES:
         print('Triple stable mass transfer')
 
@@ -867,8 +1242,113 @@ def triple_stable_mass_transfer(bs, donor, accretor, self):
         self.save_snapshot()        
     else:
         bs.bin_type = bin_type['stable_mass_transfer']                
+        
+    time_step = minimum_time_step
+    a_outer = bs.semimajor_axis
+    e_outer = bs.eccentricity    
+    a_inner = accretor.semimajor_axis
+    e_inner = accretor.eccentricity
+    m1 = accretor.child1.mass
+    m2 = accretor.child2.mass
+    q_inner = m1/m2
+    if q_inner < 1:
+        q_inner = 1./q_inner
+    m3 = donor.mass 
+    m3_env = donor.mass - donor.core_mass 
+          
+    #Whether there is a circumbinary disk in stead of ballistic accretion
+    CBD, CBD_fraction = CBD_check(m3, m1+m2, a_outer, e_outer, a_inner, e_inner)
+    if (not INCLUDE_OUTFLOW_CBD_IN_TSMT) and (CBD): 
+        conservative_CBD = True
+    #Whether GWs dominate the orbital evolution        
+    GW = False 
+        
+    while (m3_env > 0|units.MSun):
+        print('m3 env', m3_env, bs.mass_transfer_rate)
+        
+        # Adjust outer orbit and star 
+        dm3 = bs.mass_transfer_rate * time_step # or m3_init?
+        if dm3 > m3_env:
+            dm3 = m3_env
+            time_step = time_step * m3_env / m3
+            m3_env = 0
+        adot_outer = calculate_adot_AM(a_outer, m3, m1+m2, bs.mass_transfer_rate, conservative_CBD) 
+        a_outer = a_outer + adot_outer*time_step #check plus/minus sign 
+        #of gewoon a_new gebruiken: silvia 
+#       a_outer = new_a_AM(bs.semimajor_axis, donor.mass, accretor.child1.mass + accretor.child2.mass, donor.mass - m3, conservative) 
+
+        # Adjust inner binary and stars
+        # For printing purpose
+        CBD_prev = CBD 
+        GW_prev = GW
+        params = np.array([a_inner, e_inner, m1+m2, m1, m2, q_inner])
+        params_new, time_step, GW = adaptive_RK4_step(params, bs.relative_inclination, bs.mass_transfer_rate, CBD, conservative_CBD, time_step, self)
+        a_inner, e_inner, mbin, m1,m2, q_in = params_new
+        
+        if e_inner < 0:
+            e_inner = 0            
+        q_inner = m1/m2
+        if q_inner < 1:
+            q_inner = 1./q_inner
+        m3 = m3 - dm3
+        m3_env = m3_env - dm3 # does not take into account change in core mass. If TRES timesteps are small this is ok. 
+
+        # Check for RLOF in inner binary. If so: merge.
+        Rl_accretor_child1 = roche_radius_dimensionless(accretor.child1.mass, accretor.child2.mass)*a_inner
+        Rl_accretor_child2 = roche_radius_dimensionless(accretor.child2.mass, accretor.child1.mass)*a_inner
+        if (accretor.child1.radius > Rl_accretor_child1) or (accretor.child2.radius > Rl_accretor_child2):
+            stopping_condition = perform_inner_merger(bs, accretor.child1, accretor.child2, self) 
+            if not stopping_condition: #stellar interaction
+                return False                                                                      
+
+        # Check for change of TMT regimes 
+        CBD, CBD_fraction = CBD_check(m3, m1+m2, a_outer, e_outer, a_inner, e_inner)
+        if (CBD != CBD_prev): # In case a transition from CBD to BA occurs or vice versa, we manually reduce the time step
+            time_step = minimum_time_step
+        if (not INCLUDE_OUTFLOW_CBD_IN_TSMT) and (CBD): 
+            conservative_CBD = True            
+
+        # Printing data if transition from ballistic accretion to CBD occurs or vice versa
+        if (CBD != CBD_prev) and (not GW): 
+            self.save_snapshot()       
+
+        # Printing data if transition to or out of GW regime occurs
+        if (GW != GW_prev): 
+            self.save_snapshot()       
+            
+        # Check for dynamical instability silvia ?           
+        # Check for mt instability silvia ?            
+        #if timesteps are small, this isn't necessary. 
+        # but code could be faster if we stable tmt in one go. 
+
+        sys.exit()
+        
+    bs.semimajor_axis = a_outer
+    bs.eccentricity = e_outer
+    accretor.semimajor_axis = a_inner
+    accretor.eccentricity = e_inner
+
+    donor_in_stellar_code = donor.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
+    #reduce_mass not subtrac mass, want geen adjust_donor_radius #maybe doesn't matter here 
+    #check if star changes type     
+    donor_in_stellar_code.change_mass(-1*(donor.mass - m3 +(small_numerical_error|units.MSun)), 0.|units.yr)    
+    self.copy_from_stellar()
+
+    if not conservative: 
+        #reduce_mass not subtrac mass, want geen adjust_donor_radius #maybe doesn't matter here 
+        #check if star changes type     
+        accretor_child1_in_stellar_code = accretor.child1.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
+        accretor_child1_in_stellar_code.change_mass(-1*(accretor_child1.mass - m1 +(small_numerical_error|units.MSun)), 0.|units.yr)    
+        accretor_child2_in_stellar_code = accretor.child2.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
+        accretor_child2_in_stellar_code.change_mass(-1*(accretor_child2.mass - m2 +(small_numerical_error|units.MSun)), 0.|units.yr)    
+        self.copy_from_stellar()
     
-    #implementation is missing
+    
+    
+    sys.exit()
+    return False
+
+
 
 def triple_common_envelope_phase(bs, donor, accretor, self):
     # mass transfer of both inner and outer orbit is not yet considered here
@@ -881,6 +1361,7 @@ def triple_common_envelope_phase(bs, donor, accretor, self):
     self.save_snapshot()       
     
     #implementation is missing
+    return False
 
 #when the tertiary star transfers mass to the inner binary
 def outer_mass_transfer(bs, donor, accretor, self):
@@ -889,18 +1370,17 @@ def outer_mass_transfer(bs, donor, accretor, self):
         print('Triple mass transfer')
         bs.semimajor_axis, donor.mass, self.get_mass(accretor), donor.stellar_type
 
-
     if bs.is_mt_stable:
-        triple_stable_mass_transfer(bs, donor, accretor, self)
+        stopping_condition = triple_stable_mass_transfer(bs, donor, accretor, self)
         
         # possible the outer binary needs part_dt_mt as well. 
         #adjusting triple is done in secular evolution code
     else:        
-        triple_common_envelope_phase(bs, donor, accretor, self)
+        stopping_condition = triple_common_envelope_phase(bs, donor, accretor, self)
 
 
     #stopping condition 0:False, 1:True, -1: calculate through outer mass transfer - effect on inner & outer orbit is taken care off here. 
-    return -1 
+    return stopping_condition            
 
 #-------------------------
 
@@ -1053,8 +1533,10 @@ def perform_stellar_interaction(bs, self):
                 print(self.get_mass(bs), bs.child1.mass, self.get_mass(bs.child2))
     
             if bs.child1.is_donor:
-                if bs.child2.child1.is_donor or bs.child2.child2.is_donor:
-                    stopping_condition = outer_mass_transfer(bs, bs.child1, bs.child2, self)
+#                if bs.child2.child1.is_donor or bs.child2.child2.is_donor:
+#                    print(3)
+#                    stopping_condition = outer_mass_transfer(bs, bs.child1, bs.child2, self)
+                stopping_condition = outer_mass_transfer(bs, bs.child1, bs.child2, self)
             else:
                 detached(bs, self)
                 
@@ -1152,12 +1634,12 @@ def mass_transfer_stability(binary, self):
                 binary.is_mt_stable = False
         elif binary.child1.is_donor and binary.child1.mass > binary.child2.mass*q_crit(self, binary.child1, binary.child2):
             if REPORT_MASS_TRANSFER_STABILITY:
-                print("Mass transfer stability: Mdonor1>Macc*q_crit ")
+                print("Mass transfer stability: Mdonor1>Macc*q_crit at q_crit = ", q_crit(self, binary.child1, binary.child2))
             binary.mass_transfer_rate = -1.* binary.child1.mass / dynamic_timescale(binary.child1)
             binary.is_mt_stable = False
         elif binary.child2.is_donor and binary.child2.mass > binary.child1.mass*q_crit(self, binary.child2, binary.child1):
             if REPORT_MASS_TRANSFER_STABILITY:
-                print("Mass transfer stability: Mdonor2>Macc*q_crit ")
+                print("Mass transfer stability: Mdonor2>Macc*q_crit at q_crit = ", q_crit(self, binary.child2, binary.child1))
             binary.mass_transfer_rate= -1.* binary.child2.mass / dynamic_timescale(binary.child2) 
             binary.is_mt_stable = False
             
@@ -1208,10 +1690,9 @@ def mass_transfer_stability(binary, self):
             
         elif star.is_donor and star.mass > self.get_mass(companion)*q_crit(self, star, companion):
             if REPORT_MASS_TRANSFER_STABILITY:
-                print("Mass transfer stability: Mdonor1>Macc*q_crit")
+                print("Mass transfer stability: Mdonor1>Macc*q_crit at q_crit = ", q_crit(self, star, companion))
             binary.mass_transfer_rate = -1.* star.mass / dynamic_timescale(star)
             binary.is_mt_stable = False
-            
             
         elif star.is_donor:
             if REPORT_MASS_TRANSFER_STABILITY:

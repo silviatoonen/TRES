@@ -230,8 +230,8 @@ class Triple_Class:
             sys.exit(
                 "stop_at_disintegrated = False not possible yet. After the disintegration of the triple, further evolution can be done with stellar code directly. "
             )
-        if stop_at_outer_mass_transfer == False:
-            sys.exit("stop_at_outer_mass_transfer = False not possible yet. Methodology is as of yet non-existent.")
+#        if stop_at_outer_mass_transfer == False:
+#            sys.exit("stop_at_outer_mass_transfer = False not possible yet. Methodology is as of yet non-existent.")
         if stop_at_outer_collision == False:
             sys.exit(
                 "stop_at_outer_collision = False not possible. Non-hierarchical triples can not be simulated using the secular equations as used in TRES. Further evolution should be done by other means, e.g. one of the N-body codes implemented in AMUSE."
@@ -477,6 +477,49 @@ class Triple_Class:
                 return True
 
         return False
+
+    def donor_timescale(self, stellar_system=None):
+        if stellar_system == None:
+            stellar_system = self.triple
+
+        if stellar_system.is_star:
+            if stellar_system.is_donor:
+                return abs(stellar_system.mass/stellar_system.parent.mass_transfer_rate)
+            else:
+                return minimum_time_step 
+        else:
+            t_donor1 = self.donor_timescale(stellar_system.child1)
+            t_donor2 = self.donor_timescale(stellar_system.child2)
+            return max(t_donor1, t_donor2)
+            
+        return minimum_time_step
+
+#    def donor_timescale(self, stellar_system=None):
+#        if stellar_system == None:
+#            stellar_system = self.triple
+#        t_donor = minimum_time_step
+#        
+#        if self.is_binary(stellar_system):
+#            if stellar_system.child1.is_donor:
+#                t_donor = max(t_donor, abs(stellar_system.child1.mass / stellar_system.mass_transfer_rate))
+#            if stellar_system.child2.is_donor:
+#                t_donor = max(t_donor, abs(stellar_system.child2.mass / stellar_system.mass_transfer_rate))
+#
+#        else:
+#            if stellar_system.child1.is_star:
+#                if stellar_system.child1.is_donor:
+#                    t_donor = max(t_donor, abs(stellar_system.child1.mass / stellar_system.mass_transfer_rate))
+#            else:
+#                self.donor_timescale(stellar_system.child1)                            
+#
+#            if stellar_system.child2.is_star:
+#                if stellar_system.child2.is_donor:
+#                    t_donor = max(t_donor, abs(stellar_system.child2.mass / stellar_system.mass_transfer_rate))
+#            else:
+#                self.donor_timescale(stellar_system.child2)                            
+#
+#        return t_donor
+
 
     def has_donor(self, stellar_system=None):
         if stellar_system == None:
@@ -2232,15 +2275,13 @@ class Triple_Class:
         elif self.is_binary(stellar_system):
             if REPORT_TRIPLE_EVOLUTION:
                 print("\n perform stellar interaction: binary")
-            #            stellar_system = perform_stellar_interaction(stellar_system, self)
             stopping_condition = perform_stellar_interaction(stellar_system, self)
-            return stopping_condition  # stellar interaction
+            return stopping_condition  
         else:
             if REPORT_TRIPLE_EVOLUTION:
                 print("\n perform stellar interaction")
-
             stopping_condition = perform_stellar_interaction(stellar_system, self)
-            if not stopping_condition:  # stellar interaction
+            if not stopping_condition:  
                 return False
 
             if stopping_condition > 0:
@@ -2373,6 +2414,9 @@ class Triple_Class:
     def recall_memory_one_step_stellar(self, nr_unsuccessfull, star_unsuccessfull):
         if REPORT_DEBUG:
             print("recall_memory_one_step_stellar")
+
+        print("recall_memory_one_step_stellar")
+        sys.exit()
 
         self.update_time_derivative_of_radius()
         dt = self.triple.time - self.previous_time
@@ -2799,8 +2843,9 @@ class Triple_Class:
                     (self.has_donor() or self.has_OLOF_donor())
                     and self.triple.bin_type == "detached"
                     and self.triple.child2.bin_type == "detached"
-                    and dt > minimum_time_step
+                    and dt > self.donor_timescale()
                 ):
+                    print('rlof found')
                     # self.rewind_to_begin_of_rlof_stellar(dt)
                     # print('RLOF:', self.triple.child2.child1.is_donor, self.triple.bin_type , self.triple.child2.bin_type )
                     if self.stellar_code.__module__.split(".")[-2] == "mesa_r15140":
@@ -2809,7 +2854,7 @@ class Triple_Class:
                         )
                     else:
                         self.stellar_code.particles.recall_memory_one_step()
-
+                    
                     self.copy_from_stellar()
                     self.update_stellar_parameters()
                     if self.include_CHE:  # only needed when including CHE
@@ -2818,6 +2863,28 @@ class Triple_Class:
                     # note that 'previous' parameters cannot be reset
                     # resetting is_donor in determine_time_step
                     continue
+                elif (
+                    (self.has_donor() or self.has_OLOF_donor())
+                    and self.triple.bin_type == "detached"
+                    and self.triple.child2.bin_type == "detached"
+                    and dt > minimum_time_step
+                ):
+                    print('rlof found2')
+
+                    self.determine_mass_transfer_timescale()
+                    if self.check_stopping_conditions_stellar() == False:
+                        print("stopping conditions stellar")
+                        break
+                    print("Stopping condition")
+                        
+                    if not self.resolve_stellar_interaction():
+                        print("stopping conditions stellar interaction")
+                        break
+                    print("resolve")
+                    
+                    
+                    sys.exit()
+
 
             # needed for nucleair timescale
             self.update_time_derivative_of_radius()
@@ -2825,14 +2892,20 @@ class Triple_Class:
             # do stellar interaction
             if REPORT_DEBUG:
                 print("Stellar interaction")
+#            print("Stellar interaction")
 
             self.determine_mass_transfer_timescale()
             if self.check_stopping_conditions_stellar() == False:
                 print("stopping conditions stellar")
                 break
+#            print("Stopping condition")
+                
             if not self.resolve_stellar_interaction():
                 print("stopping conditions stellar interaction")
                 break
+#            print("resolve")
+#            sys.exit()
+
             self.update_time_derivative_of_radius()  # includes radius change from wind and ce, not stable mt
             self.update_time_derivative_of_moment_of_inertia()  # includes mass and radius change from wind and mass transfer
             if self.check_stopping_conditions_stellar_interaction() == False:

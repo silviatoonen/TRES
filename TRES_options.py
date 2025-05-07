@@ -14,12 +14,6 @@ REPORT_BINARY_EVOLUTION = False
 REPORT_FUNCTION_NAMES = False
 REPORT_MASS_TRANSFER_STABILITY = False
 
-no_stellar_evolution = False
-
-#reset in case of MESA by function options_mesa below
-GET_GYRATION_RADIUS_FROM_STELLAR_CODE = False
-GET_AMC_FROM_STELLAR_CODE = False
-
 
 #--------------------------------------------------------------------------------------------------------------------
 #TRES constants
@@ -48,8 +42,52 @@ time_step_factor_kozai = 0.025 # 0.2*0.1, 0.2-> for error in kozai timescale, 0.
 kozai_type_factor = 10.
 maximum_time_step = np.inf|units.Myr
 
+
+#--------------------------------------------------------------------------------------------------------------------
+#TRES stellar evolutiom settings
+no_stellar_evolution = False
+
+#reset in case of MESA by function options_mesa below
+GET_GYRATION_RADIUS_FROM_STELLAR_CODE = False
+GET_AMC_FROM_STELLAR_CODE = False
+
 kanonical_neutron_star_mass = 1.4|units.MSun
 fall_back_mass = 41 |units.MSun
+
+#include_CHE
+
+#--------------------------------------------------------------------------------------------------------------------
+#TRES mass transfer settings
+
+#Tertiary stable mass transfer
+#accuracy settings 
+max_iter_TSMT = 100
+eps_TSMT = 1e-15 
+
+#units... silvia pas aan in vergelijkingeen
+#Gas density during ballistic accretion 
+density_BA_in_TSMT = 1e-8 |units.g/(units.cm)**3 
+#Sound speed in gas during ballistic accretion 
+c_s_BA_in_TSMT = 3e6|units.cm/units.s
+    
+#Include gravitational drag forces during ballistic accretion
+INCLUDE_GDF_IN_TSMT = True
+#Prescription for the wake of the GDF
+#model_I_GDF = 'Ostriker99' 
+model_I_GDF = 'Kim08' #Default
+#Include eccentricity evolution during gas drag phase
+INCLUDE_ECC_GDF_IN_TSMT = False #does this recquire include_gdf_in_tsms to be true?
+#Include hydrodynamic drag forces
+INCLUDE_HYDR_IN_TSMT = True
+hydro_drag_coefficient_in_TSMT =1 
+
+#Allow formation of CBD
+INCLUDE_CBD_IN_TSMT = True
+#Include modified torques for retrograde CBDs
+INCLUDE_RETROGRADE_CBD_IN_TSMT = False#does this recquire include_cbd_in_tsms to be true? silvia
+#Include mass outflow from inner binary during CBD. If True, it is assumed to go through isotropic emission
+INCLUDE_OUTFLOW_CBD_IN_TSMT = False
+
 
 #--------------------------------------------------------------------------------------------------------------------
 #TPS general settings
