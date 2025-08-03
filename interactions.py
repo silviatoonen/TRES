@@ -7,7 +7,7 @@ from scipy.interpolate import griddata
 
 from TRES_options import REPORT_BINARY_EVOLUTION, REPORT_FUNCTION_NAMES, REPORT_MASS_TRANSFER_STABILITY
 from TRES_options import density_BA_in_TSMT, c_s_BA_in_TSMT, max_iter_TSMT, eps_TSMT
-from TRES_options import INCLUDE_GDF_IN_TSMT, model_I_GDF, INCLUDE_ECC_GDF_IN_TSMT, INCLUDE_CBD_IN_TSMT, INCLUDE_RETROGRADE_CBD_IN_TSMT, INCLUDE_OUTFLOW_CBD_IN_TSMT, INCLUDE_HYDR_IN_TSMT
+from TRES_options import INCLUDE_GDF_IN_TSMT, model_I_GDF, INCLUDE_ECC_GDF_IN_TSMT, INCLUDE_CBD_IN_TSMT, INCLUDE_RETROGRADE_CBD_IN_TSMT, INCLUDE_OUTFLOW_CBD_IN_TSMT, INCLUDE_HYDR_IN_TSMT, hydro_drag_coefficient_in_TSMT
 from TRES_options import minimum_time_step
 
 #constants
@@ -201,7 +201,6 @@ def copy_outer_star_to_accretor(self):
             tertiary_star = self.triple.child2 
             bs = self.triple.child1
             
-
         if not bs.child1.is_donor:
             bs.child1 = tertiary_star
         else:
@@ -239,6 +238,7 @@ def perform_inner_collision(self):
     
         #merger
         donor_in_stellar_code.merge_with_other_star(accretor_in_stellar_code) 
+#    self.stellar_code.evolve_model(minimum_time_step) #to get updates radii, not just inflation of stars due to accretion #silvia
         self.copy_from_stellar()
               
         donor.moment_of_inertia_of_star = self.moment_of_inertia(donor)        
@@ -303,6 +303,7 @@ def perform_inner_merger(bs, donor, accretor, self):
             
     #merger
     donor_in_stellar_code.merge_with_other_star(accretor_in_stellar_code) 
+#    self.stellar_code.evolve_model(minimum_time_step) #to get updates radii, not just inflation of stars due to accretion #silvia
     self.copy_from_stellar()
     
     donor.moment_of_inertia_of_star = self.moment_of_inertia(donor)        
@@ -390,7 +391,7 @@ def common_envelope_angular_momentum_balance(bs, donor, accretor, self):
         donor_in_stellar_code = donor.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
         #reduce_mass not subtrac mass, want geen adjust_donor_radius
         #check if star changes type     
-        donor_in_stellar_code.change_mass(-1*(donor.mass-donor.core_mass+(small_numerical_error|units.MSun)), 0.|units.yr)    
+        donor_in_stellar_code.change_mass(-1*(donor.mass-donor.core_mass+(small_numerical_error|units.MSun)), 0.|units.yr) 
         self.copy_from_stellar()
         
         donor.moment_of_inertia_of_star = self.moment_of_inertia(donor)        
@@ -750,6 +751,8 @@ def stable_mass_transfer(bs, donor, accretor, self):
     #accretor_in_stellar_code.change_mass(-1.*dm, dt)
     #note doesnt work perfectly, as seba is oblivious to the roche lobe radius
     
+    #    self.stellar_code.evolve_model(minimum_time_step) #to get updates radii, not just inflation of stars due to accretion #silvia
+
 
     #to adjust radius to mass loss and increase  
     self.stellar_code.evolve_model(self.triple.time)
@@ -859,10 +862,6 @@ def contact_system(bs, star1, star2, self):
 
 #-------------------------
 #functions for mass transfer in a multiple / triple
-#silvia deal with units
-#G = 6.6743015*10**(-8)       # gravitational constant
-#c = 2.99792458*10**10            # speed of light
-
 def CBD_check(m_donor, m_accretor, a_outer, e_outer, a_inner, e_inner):
     # Condition to check whether a CBD should form  
     if not INCLUDE_CBD_IN_TSMT:
@@ -873,6 +872,7 @@ def CBD_check(m_donor, m_accretor, a_outer, e_outer, a_inner, e_inner):
     CBD = False
     if a_inner*(1+e_inner) < R_CBD:
         CBD = True
+#    print('CBD', CBD, a_inner*(1+e_inner), R_CBD)
     CBD_frac = a_inner*(1+e_inner) / R_CBD
     return CBD, CBD_frac
 
@@ -892,21 +892,61 @@ def calculate_edot_GW(a, e, m1, m2):
     edot = -beta*gamma/alpha
     return edot
  
-def calculate_adot_GDF(a, e, q, m1, m2, mbin, CBD):
-    # Semi-major axis evolution due to gaseous drag forces
+ 
+def factor_GDF_Ostriker(mach, rmax, rmin):
+    # Factor to include to drag force due to the wake created by a linear single perturber. Values adopted from Ostriker 1999
+    if mach < 1.0:
+        I = 0.5*np.log((1+mach)/(1-mach)) - mach
+    else:
+        I = 0.5*np.log(1-1/(mach**2)) + np.log(rmax/rmin)
+    return I
 
+def factor_GDF_Kim08(mach, rmin, a_in):
+    # Factor to include to drag force due to the wake created by binary objects. Values adopted from Kim et al. (2007,2008)
+    I1_0 = 0.7706*np.log((1+mach)/(1.0004-0.9185)) - 1.4703*mach
+    I1_1 = np.log(330*a_in/(rmin)*(mach-0.71)**(5.72)*mach**(-9.58))
+    
+    if mach < 1.0:
+        I1 = 0.7706*np.log((1+mach)/(1.0004-0.9185)) - 1.4703*mach
+    elif mach < 4.4:
+        I1 = np.log(330*a_in/(rmin)*(mach-0.71)**(5.72)*mach**(-9.58))
+    else:
+        I1 = np.log(a_in/(rmin)/(0.11*mach+1.65))
+    if mach < 2.97:
+        I2 = -0.022*(10-mach)*np.tanh(3*mach/2)
+    else:
+        I2 = -0.13 + 0.07*np.arctan(5*mach-15)
+        
+    return I1+I2
+        
+def integrand_da_GDF(f, e): # Integral in the GDF equation
+    return 1/((1+e*np.cos(f))**2*np.sqrt(1+2*e*np.cos(f)+e**2))
+    
+def integrand_da_hydr(f, e): # Integral in the GDF equation
+    return (1+2*e*np.cos(f)+e**2)**(3/2)/((1+e*np.cos(f))**2)
+
+def integrand_de_GDF(f, e): # Integral in the GDF equation for eccentric binaries
+    return (e+np.cos(f))/((1+e*np.cos(f))**2*(1+2*e*np.cos(f)+e**2)**(3/2))
+    
+def integrand_de_hydr(f, e): # Integral in the GDF equation for eccentric binaries
+    return np.sqrt(1+2*e*np.cos(f)+e**2)*(e+np.cos(f))/((1+e*np.cos(f))**2)
+  
+ 
+def calculate_adot_GDF(a, e, q, m1, m2, mbin, CBD, r1, r2):
+    # Semi-major axis evolution due to gaseous drag forces
+    
     if CBD: # if a CBD has formed, we assume the binary orbit is clear of gas
         return 0|units.RSun/units.Myr
-
+    
     v_orb = np.sqrt(constants.G*mbin/a) # orbital velocity of the binary
-    mach = v_orb / c_s_BA_IN_TMT # Mach number (for simplicity omitted dependency on the true anomaly)
+    mach = v_orb / c_s_BA_in_TSMT # Mach number (for simplicity omitted dependency on the true anomaly)
 
     rmax = 2*a
     rmin = a/10
     if model_I_GDF == 'Ostriker99':
-        I = self.Ostriker(mach, rmax, rmin)
+        I = factor_GDF_Ostriker(mach, rmax, rmin)
     elif model_I_GDF == 'Kim08':
-        I = self.Kim08(mach, rmin)
+        I = factor_GDF_Kim08(mach, rmin, a)#@floris uses self.a_in
     
     integral_da = 2*np.pi
 
@@ -915,23 +955,17 @@ def calculate_adot_GDF(a, e, q, m1, m2, mbin, CBD):
     adot_GDF = 0|units.RSun/units.Myr
     adot_hydr = 0|units.RSun/units.Myr
     
-    if (INCLUDE_GDF_IN_TSMT=='true'): # Contribution of gravitational gas drag
+    if INCLUDE_GDF_IN_TSMT: # Contribution of gravitational gas drag
         # Equation B.6 from Kummer et al. (2024)
-        if INCLUDE_ECC_GDF_IN_TSMT == 'true': # Gas drag in eccentric binaries
-            integral_da = integrate.quad(self.integrand_da_gdf, 0, 2*np.pi, args=(self.e_in,))[0]
-        A0_gdf = -4*np.pi*constants.G**2*density_BA_in_TSMT*I
-        adot_GDF = A0_gdf * (1-e**2)**2*mbin**2/(np.pi*n**3*a**2*mu) * (1/q**2 + q**2) * integral_da
+        if INCLUDE_ECC_GDF_IN_TSMT: # Gas drag in eccentric binaries
+            integral_da = integrate.quad(integrand_da_GDF, 0, 2*np.pi, args=(e,))[0]#@floris uses self.e_in
+        A0_GDF = -4*np.pi*constants.G**2*density_BA_in_TSMT*I
+        adot_GDF = A0_GDF * (1-e**2)**2*mbin**2/(np.pi*n**3*a**2*mu) * (1/q**2 + q**2) * integral_da
         
-    if INCLUDE_HYDR_IN_TSMT=='true': # Contribution of hydrodynamic gas drag
-        if INCLUDE_ECC_GDF_IN_TSMT == 'true': # Gas drag in eccentric binaries
-            integral_da = integrate.quad(self.integrand_da_hydr, 0, 2*np.pi, args=(self.e_in,))[0]
+    if INCLUDE_HYDR_IN_TSMT: # Contribution of hydrodynamic gas drag
+        if INCLUDE_ECC_GDF_IN_TSMT: # Gas drag in eccentric binaries
+            integral_da = integrate.quad(integrand_da_hydr, 0, 2*np.pi, args=(e,))[0]#@floris uses self.e_in
         A0_hydr = -0.5*hydro_drag_coefficient_in_TSMT*np.pi*density_BA_in_TSMT
-        if self.compact_object == True:
-            r1 = self.Schwarzschild_radius(m1)
-            r2 = self.Schwarzschild_radius(m2)
-        else:
-            r1 = self.r1
-            r2 = self.r2
         adot_hydr = A0_hydr * n*a**2/(np.pi*mu*mbin**2) * (r1**2*m2**2+r2**2*m1**2) * integral_da
 
     adot = adot_GDF + adot_hydr
@@ -939,7 +973,7 @@ def calculate_adot_GDF(a, e, q, m1, m2, mbin, CBD):
     return adot
     
     
-def calculate_edot_GDF(a, e, q, m1, m2, mbin, CBD): #silvia this doesn't seem to be a dot is this de or edot?
+def calculate_edot_GDF(a, e, q, m1, m2, mbin, CBD, r1, r2): 
     # Evolution of eccentricity due to gas drag (Rozner & Perets 2022)
 
     if not INCLUDE_ECC_GDF_IN_TSMT: 
@@ -949,14 +983,14 @@ def calculate_edot_GDF(a, e, q, m1, m2, mbin, CBD): #silvia this doesn't seem to
    
     # Inspiral due to gas drag
     v_orb = np.sqrt(constants.G*mbin/a)
-    mach = v_orb / c_s_BA_IN_TMT
+    mach = v_orb / c_s_BA_in_TSMT
 
     rmax = 2*a
-    rmin = a/10
+    rmin = a/10.
     if model_I_GDF == 'Ostriker99':
-        I = self.Ostriker(mach, rmax, rmin)
+        I = factor_GDF_Ostriker(mach, rmax, rmin)
     elif model_I_GDF == 'Kim08':
-        I = self.Kim08(mach, rmin)
+        I = factor_GDF_Kim08(mach, rmin, a)#@floris uses self.a_in
     
     A_0 = -4*np.pi*constants.G**2*density_BA_in_TSMT*I
     n = np.sqrt(constants.G*mbin/a**3)
@@ -964,23 +998,17 @@ def calculate_edot_GDF(a, e, q, m1, m2, mbin, CBD): #silvia this doesn't seem to
     edot_GDF = 0|1./units.Myr
     edot_hydr = 0|1./units.Myr
     
-    if (INCLUDE_GDF_IN_TSMT=='true'): # Contribution of gravitational gas drag
+    if (INCLUDE_GDF_IN_TSMT): # Contribution of gravitational gas drag
         # Equation B.9 from Kummer et al. (2024)
-        if INCLUDE_ECC_GDF_IN_TSMT == 'true': # Gravitational gas drag in eccentric binaries
-            integral_de_gdf = integrate.quad(self.integrand_de_gdf, 0, 2*np.pi, args=(self.e_in,))[0]
-        A0_gdf = -4*np.pi*constants.G**2*density_BA_in_TSMT*I
-        edot_GDF = A0_gdf * (1-e**2)**3*mbin**2/(np.pi*n**3*a**3*mu) * (1/q**2 + q**2) * integral_de_gdf
+        if INCLUDE_ECC_GDF_IN_TSMT: # Gravitational gas drag in eccentric binaries
+            integral_de_GDF = integrate.quad(integrand_de_GDF, 0, 2*np.pi, args=(e,))[0]#@floris uses self.e_in
+        A0_GDF = -4*np.pi*constants.G**2*density_BA_in_TSMT*I
+        edot_GDF = A0_GDF * (1-e**2)**3*mbin**2/(np.pi*n**3*a**3*mu) * (1/q**2 + q**2) * integral_de_GDF
 
-    if INCLUDE_HYDR_IN_TSMT=='true': # contribution of hydrodynamic gas drag
-        if INCLUDE_ECC_GDF_IN_TSMT == 'true': # Gravitational gas drag in eccentric binaries
-            integral_de_hydr = integrate.quad(self.integrand_de_hydr, 0, 2*np.pi, args=(self.e_in,))[0]
+    if INCLUDE_HYDR_IN_TSMT: # contribution of hydrodynamic gas drag
+        if INCLUDE_ECC_GDF_IN_TSMT: # Gravitational gas drag in eccentric binaries
+            integral_de_hydr = integrate.quad(integrand_de_hydr, 0, 2*np.pi, args=(e))[0]#@floris uses self.e_in
         A0_hydr = -0.5*hydro_drag_coefficient_in_TSMT*np.pi*density_BA_in_TSMT
-        if self.compact_object == True:
-            r1 = self.Schwarzschild_radius(m1)
-            r2 = self.Schwarzschild_radius(m2)
-        else:
-            r1 = self.r1
-            r2 = self.r2
         edot_hydr = A0_hydr * n*a*(1-e**2)/(np.pi*mu*mbin**2) * (r1**2*m2**2+r2**2*m1**2) * integral_de_hydr
     
     edot = edot_GDF + edot_hydr
@@ -993,7 +1021,7 @@ def calculate_adot_CBD(a, e, q, incl, mbin, mdot_bin, CBD, self):
     if not CBD:
         return 0|units.RSun/units.Myr
 
-    if (incl <= np.pi/2) | (INCLUDE_RETROGRADE_CBD_IN_TSMT != 'true'): # Adopted values from Siwek et al. (2023)
+    if (incl <= np.pi/2) | (not INCLUDE_RETROGRADE_CBD_IN_TSMT): # Adopted values from Siwek et al. (2023)
         try:
             # If e>0.8 we don't extrapolate, but use edge value
             factor = self.intp_grid_a((q, min(e, 0.8)))
@@ -1011,8 +1039,8 @@ def calculate_adot_CBD(a, e, q, incl, mbin, mdot_bin, CBD, self):
     else:
         print('Non-physical inclination: ', incl)
     
-    #floris: shouldn't the conservatinveness be included here?
     adot = factor * a * mdot_bin / (mbin)
+#    print('adot CBD', adot,  a, factor, mdot_bin, mbin, incl)
 
     return adot
 
@@ -1023,7 +1051,7 @@ def calculate_edot_CBD(e, q, incl, mbin, mdot_bin, CBD, self):
     if not CBD:
         return 0|1./units.Myr
 
-    if (incl <= np.pi/2) | (INCLUDE_RETROGRADE_CBD_IN_TSMT != 'true'): # Adopted values from Siwek et al. (2023)
+    if (incl <= np.pi/2) | (not INCLUDE_RETROGRADE_CBD_IN_TSMT): # Adopted values from Siwek et al. (2023)
         try:
             # If e>0.8 we don't extrapolate, but use edge value
             factor = self.intp_grid_e((q, min(e, 0.8)))
@@ -1042,8 +1070,9 @@ def calculate_edot_CBD(e, q, incl, mbin, mdot_bin, CBD, self):
             factor = 2
     else:
         print('Non-physical inclination: ', incl)
-    #floris: shouldn't the conservatinveness be included here?
+        
     edot = factor * mdot_bin / mbin
+#    print('edot_CBD', edot, e, factor, mdot_bin, mbin)
     
     return edot
 
@@ -1097,7 +1126,7 @@ def grid_interpolation(param):
 def calculate_adot_AM(a, m_donor, m_acc, mass_transfer_rate, conservative_CBD=True, iso=False):
     # Evolution of the outer orbit due to mass transfer based on angular momentum balance
 
-#    if (iso == True) & ((CBD == False) | (conservative_CBD == True)):#why adot_AM is 0 in this case? Silvia
+#    if (iso == True) & ((CBD == False) | (conservative_CBD == True)):#@Floris: why adot_AM is 0 in this case Silvia
 #        return 0
 
     #beta: accretion efficiency
@@ -1111,18 +1140,16 @@ def calculate_adot_AM(a, m_donor, m_acc, mass_transfer_rate, conservative_CBD=Tr
     else: # Isotropic re-emission
         beta = 0
         gamma = m_donor / m_acc
+      
+    adot = -2. * a * mass_transfer_rate/m_donor * (1.-beta*m_donor/m_acc - (1.-beta)*(gamma+0.5)*m_donor/(m_donor+m_acc)) 
     
-    #note that mass_transfer_rate is defined to be positive here, therefore no extra minus sign  #check this, floris changes the minus sign in def derivatives  
-    adot = 2 * a * mass_transfer_rate/m_donor * (1-beta*m_donor/m_acc - (1-beta)*(gamma+0.5)*m_donor/(m_donor+m_acc)) 
-    
-    #why work with da, why not a_new? silvia 
     return adot
 
 
 def accretion_rate_onto_binary(mass_transfer_rate, conservative=True, mdot=0|units.MSun/units.yr):
     # Change in mass of inner binary due to mass accretion
     if (conservative == True) & (mdot == 0|units.MSun/units.yr):
-        mdot = mass_transfer_rate
+        mdot = -1.*mass_transfer_rate
     elif conservative == True: # In case dm was already specified, possibly needed in future to test mt stability
         mdot = mdot
     else:
@@ -1131,108 +1158,95 @@ def accretion_rate_onto_binary(mass_transfer_rate, conservative=True, mdot=0|uni
     return mdot
 
  
-def derivatives(params, incl, mass_transfer_rate, CBD, conservative_CBD, self):
+def derivatives(params, incl, mass_transfer_rate, CBD, conservative_CBD, r1, r2, self):
    # Function that calculates the time-derivatives of the system's properties
-   # params = [a_in, e_in, mbin, m1, m2, q_in]
+   # params = [a_in, e_in, mbin, m1, m2]
 
    # Constrain unphysical values for the properties of the system
    if params[0] < 0|units.RSun:
        params[0] = 1e-5|units.RSun
    if params[1] < 0:
        params[1] = 0
-   if params[5] > 1:
-       params[5] = 1/params[5]
+       
+   # The mass ratio should always be smaller than or equal to one
+   q_inner = params[3]/params[4]
+   if q_inner < 1:
+       q_inner = 1./q_inner
 
-   adot_GDF = calculate_adot_GDF(params[0], params[1], params[5], params[3], params[4], params[2], CBD)
-   adot_CBD = calculate_adot_CBD(params[0], params[1], params[5], incl, params[2], mass_transfer_rate, CBD, self)
+   adot_GDF = calculate_adot_GDF(params[0], params[1], q_inner, params[3], params[4], params[2], CBD, r1, r2)
+   adot_CBD = calculate_adot_CBD(params[0], params[1], q_inner, incl, params[2], -1*mass_transfer_rate, CBD, self)
    adot_GW = calculate_adot_GW(params[0], params[1], params[3], params[4])
-#   print(adot_GDF, adot_GW, adot_CBD)
+#   print('adot', adot_GDF, adot_GW, adot_CBD)
    adot_in = adot_GDF + adot_CBD + adot_GW
-   
-   GW = False
-   if abs(adot_GW) > max(abs(adot_GDF), abs(adot_CBD)):
-        GW = True
-   
-   edot_GDF = calculate_edot_GDF(params[0], params[1], params[5], params[3], params[4], params[2], CBD)
-   edot_CBD = calculate_edot_CBD(params[1], params[5], incl, params[2], mass_transfer_rate, CBD, self)
+      
+   edot_GDF = calculate_edot_GDF(params[0], params[1], q_inner, params[3], params[4], params[2], CBD, r1, r2)
+   edot_CBD = calculate_edot_CBD(params[1], q_inner, incl, params[2], -1*mass_transfer_rate, CBD, self)
    edot_GW = calculate_edot_GW(params[0], params[1], params[3], params[4])
-#   print(edot_GDF, edot_GW, edot_CBD)
+#   print('edot',edot_GDF, edot_GW, edot_CBD)
    edot_in = edot_GDF + edot_CBD + edot_GW
 
    mdot_bin = 0|units.MSun/units.yr
    mdot1 = 0|units.MSun/units.yr
    mdot2 = 0|units.MSun/units.yr
-   qdot_in = 0|1./units.yr
    if conservative_CBD:
        mdot_bin = accretion_rate_onto_binary(mass_transfer_rate, conservative_CBD)
-       mdot1 = mdot_bin * 1/(1+params[5]**(-0.9))
-       mdot2 = mdot_bin * params[5]**(-0.9)/(1+params[5]**(-0.9))
-#       qdot_in = (params[4] + mdot2)/(params[3] + mdot1) - params[4]/params[3] # dq is q_new - q_old
-       qdot_in = ((params[4] + mdot2*(1e-5|units.Myr))/(params[3] + mdot1*(1e-5|units.Myr)) - params[4]/params[3])/(1e-5|units.Myr) # dq is q_new - q_old
-#       qdot_in = (params[4] + mdot2*time_step)/(params[3] + mdot1*time_step) - params[4]/params[3]/time_step # dq is q_new - q_old #floris
+       mdot1 = mdot_bin * 1/(1+q_inner**(-0.9))
+       mdot2 = mdot_bin * q_inner**(-0.9)/(1+q_inner**(-0.9))
 
-   return np.array([adot_in, edot_in, mdot_bin, mdot1, mdot2, qdot_in]), GW
+   return np.array([adot_in, edot_in, mdot_bin, mdot1, mdot2])
         
-def RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt, self):
+def RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt, r1, r2, self):
     # Fourth order Runge-Kutta method
-    # params = [a_in, e_in, mbin, m1, m2, q_in]
+    # params = [a_in, e_in, mbin, m1, m2]
     
-    dt_vec = np.array([dt,dt,dt,dt,dt,dt])   
-    k1, GW1 = derivatives(params, incl, mass_transfer_rate, CBD, conservative_CBD, self)
-    k2, GW2 = derivatives(params + 0.5 * k1 * dt_vec, incl, mass_transfer_rate, CBD, conservative_CBD, self)
-    k3, GW3 = derivatives(params + 0.5 * k2 * dt_vec, incl, mass_transfer_rate, CBD, conservative_CBD, self)
-    k4, GW4 = derivatives(params + k3 * dt_vec, incl, mass_transfer_rate, CBD, conservative_CBD, self)
+    dt_vec = np.array([dt,dt,dt,dt,dt])   
+    k1 = derivatives(params, incl, mass_transfer_rate, CBD, conservative_CBD, r1, r2, self)
+    k2 = derivatives(params + 0.5 * k1 * dt_vec, incl, mass_transfer_rate, CBD, conservative_CBD, r1, r2, self)
+    k3 = derivatives(params + 0.5 * k2 * dt_vec, incl, mass_transfer_rate, CBD, conservative_CBD, r1, r2, self)
+    k4 = derivatives(params + k3 * dt_vec, incl, mass_transfer_rate, CBD, conservative_CBD, r1, r2, self)
     
-    GW = False
-    if GW1 or GW2 or GW3 or GW4:
-        GW = True #should this just be GW4? silvia - neither check after final state
-        
-    return params + (dt_vec / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4), GW
+    return params + (dt_vec / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
 
-def adaptive_RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt, self):
+def adaptive_RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt, r1, r2, self):
     # Function that adaptively determines the new time step
-
+    
     iter = 1
-    GW = False
-
     while iter < max_iter_TSMT:
-        y_single, GW1 = RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt, self)
-        y_double, GW2 = RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt/2, self)
-        y_double, GW3 = RK4_step(y_double, incl, mass_transfer_rate, CBD, conservative_CBD, dt/2, self)
-        if GW1 or GW2 or GW3:
-            GW = True #silvia: is only GW3 needed?
-
+        y_single = RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt, r1, r2, self)
+        y_double = RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt/2, r1, r2, self)
+        y_double = RK4_step(y_double, incl, mass_transfer_rate, CBD, conservative_CBD, dt/2, r1, r2, self)
+        #@Floris: when eccentricity = 0 , eps_rel -> inf
+        
         eps_rel = abs((y_double - y_single)/y_double)
         eps_rel = max(eps_rel)
         if eps_rel == 0: # To avoid numerical complications
             eps_rel = eps_TSMT
         dt_new = dt*(eps_TSMT/eps_rel)**0.2
-        dt_new = max(dt_new, 1)
-    
+        dt_new = max(dt_new, minimum_time_step)
+            
         # Check if the difference between y_single and y_double is within a certain error
-        if (eps_rel < eps_TSMT) | (iter >= max_iter_TSMT):
-#            if y_double[7] < 0: # In case the envelope mass of the tertiary becomes negative
-#                dt = params[7] / abs(y_double[7]-params[7]) * dt
-#                y_double, GW1 = RK4_step(params, incl, mass_transfer_rate, CBD, conservative_CBD, dt/2, self)
-#                y_double, GW2 = RK4_step(y_double, incl, mass_transfer_rate, CBD, conservative_CBD, dt/2, self)
+        # @Floris: Second criterion redundant?
+        if (eps_rel <= eps_TSMT) | (iter >= max_iter_TSMT) | (dt == minimum_time_step):
             params = y_double
-            dt = dt_new
-            if GW1 or GW2:
-                GW = True #silvia: is only GW2 needed?
-            return params, dt, GW
+            dt_next = dt_new
+            return params, dt, dt_next
+            return
         else:
             iter += 1
             dt = dt_new
-            GW = False
-            
+
+    #when max iter is reached
+    params = y_double
+    dt_next = dt_new
+              
+    return params, dt, dt_next
+
 
 def triple_stable_mass_transfer(bs, donor, accretor, self):
-    #I"m assuming tres wants to do one nuclear or thermal timestep here. -> therefore tertiary only updated once
-    #do I want small timesteps for the outer orbit, or do it in one go? -> problem if it is eccentric -> can we make a initial-final orbit equation for ecc mt? 
-
-    # for now full evolution is done in TRES, no secular evolution
-    self.instantaneous_evolution = True #skip secular evolution    
+    # based on Kummer et al. 2024 
+    # For now the envelope is stripped in one go aka without updating the stellar evolution
+    # Therefore the TRES timestep doesn't matter so much -> internally here smaller timesteps are taken to solve the orbit
 
     if REPORT_FUNCTION_NAMES:
         print('Triple stable mass transfer')
@@ -1243,85 +1257,128 @@ def triple_stable_mass_transfer(bs, donor, accretor, self):
     else:
         bs.bin_type = bin_type['stable_mass_transfer']                
         
-    time_step = minimum_time_step
     a_outer = bs.semimajor_axis
     e_outer = bs.eccentricity    
     a_inner = accretor.semimajor_axis
     e_inner = accretor.eccentricity
+        
     m1 = accretor.child1.mass
     m2 = accretor.child2.mass
-    q_inner = m1/m2
-    if q_inner < 1:
-        q_inner = 1./q_inner
     m3 = donor.mass 
     m3_env = donor.mass - donor.core_mass 
+    r1 = accretor.child1.radius
+    r2 = accretor.child2.radius
+    #use Schwarschildradius for NS & BH? @floris
+#    if accretor.child1.stellar_type in stellar_types_SN_remnants:
+#        r1 = 2*constants.G*m1/(constants.c**2) 
+#    if accretor.child2.stellar_type in stellar_types_SN_remnants:
+#        r2 = 2*constants.G*m2/(constants.c**2) 
+
+
+#    time_step = minimum_time_step 
+    initial_time_step = abs(0.01*m3_env/bs.mass_transfer_rate)
+    time_step = initial_time_step
+    total_time_passed = 0|units.yr
+    dm3 = abs(bs.mass_transfer_rate) * time_step 
           
     #Whether there is a circumbinary disk in stead of ballistic accretion
     CBD, CBD_fraction = CBD_check(m3, m1+m2, a_outer, e_outer, a_inner, e_inner)
+    conservative_CBD = False
     if (not INCLUDE_OUTFLOW_CBD_IN_TSMT) and (CBD): 
-        conservative_CBD = True
+        conservative_CBD = True #only true when there is a CBD
     #Whether GWs dominate the orbital evolution        
     GW = False 
-        
+    
     while (m3_env > 0|units.MSun):
-        print('m3 env', m3_env, bs.mass_transfer_rate)
+#        print('m3 env', m3_env, m3, m1,m2,bs.mass_transfer_rate, a_outer, a_inner, time_step, minimum_time_step, self.previous_dt, CBD, GW, a_inner, a_outer, bs.relative_inclination)
+        CBD_prev = CBD 
+        GW_prev = GW
         
         # Adjust outer orbit and star 
-        dm3 = bs.mass_transfer_rate * time_step # or m3_init?
         if dm3 > m3_env:
             dm3 = m3_env
             time_step = time_step * m3_env / m3
-            m3_env = 0
-        adot_outer = calculate_adot_AM(a_outer, m3, m1+m2, bs.mass_transfer_rate, conservative_CBD) 
-        a_outer = a_outer + adot_outer*time_step #check plus/minus sign 
-        #of gewoon a_new gebruiken: silvia 
-#       a_outer = new_a_AM(bs.semimajor_axis, donor.mass, accretor.child1.mass + accretor.child2.mass, donor.mass - m3, conservative) 
+#            m3_env = 0|units.MSun
 
         # Adjust inner binary and stars
         # For printing purpose
-        CBD_prev = CBD 
-        GW_prev = GW
-        params = np.array([a_inner, e_inner, m1+m2, m1, m2, q_inner])
-        params_new, time_step, GW = adaptive_RK4_step(params, bs.relative_inclination, bs.mass_transfer_rate, CBD, conservative_CBD, time_step, self)
-        a_inner, e_inner, mbin, m1,m2, q_in = params_new
+        params = np.array([a_inner, e_inner, m1+m2, m1, m2])
+        params_new, time_step, next_time_step = adaptive_RK4_step(params, bs.relative_inclination, bs.mass_transfer_rate, CBD, conservative_CBD, time_step, r1, r2, self)
+        total_time_passed += time_step
         
-        if e_inner < 0:
-            e_inner = 0            
-        q_inner = m1/m2
-        if q_inner < 1:
-            q_inner = 1./q_inner
+        #when eccentric mass transfer is implemented for the outer orbit, this should probably move inside of the RK4
+        adot_outer = calculate_adot_AM(a_outer, m3, m1+m2, bs.mass_transfer_rate, conservative_CBD) 
+        a_outer = a_outer + adot_outer*time_step  
+        
+        #do not do this before calculating the outer orbit as it resets m1 & m2
+        a_inner, e_inner, mbin, m1, m2 = params_new
+        e_inner = max(e_inner, 0)
+                    
+        #assuming no core growth due to stellar evolution
+        dm3 = abs(bs.mass_transfer_rate) * time_step 
         m3 = m3 - dm3
-        m3_env = m3_env - dm3 # does not take into account change in core mass. If TRES timesteps are small this is ok. 
+        m3_env = max(0|units.MSun, m3_env - dm3) 
 
         # Check for RLOF in inner binary. If so: merge.
-        Rl_accretor_child1 = roche_radius_dimensionless(accretor.child1.mass, accretor.child2.mass)*a_inner
-        Rl_accretor_child2 = roche_radius_dimensionless(accretor.child2.mass, accretor.child1.mass)*a_inner
-        if (accretor.child1.radius > Rl_accretor_child1) or (accretor.child2.radius > Rl_accretor_child2):
-            stopping_condition = perform_inner_merger(bs, accretor.child1, accretor.child2, self) 
-            if not stopping_condition: #stellar interaction
-                return False                                                                      
+        Rl_accretor_child1 = roche_radius_dimensionless(m1, m2)*a_inner*(1-e_inner)
+        Rl_accretor_child2 = roche_radius_dimensionless(m2, m2)*a_inner*(1-e_inner)
 
+        #note that TRES object itself hasn't changed yet -> original outer orbit will therefore not change in adjust_system_after_ce_in_inner_binary                                                                               
+        #any mass accretion prior to the merger is currently ignored: Silvia 
+        #i can add mass, just need to reset previous mass as well. to prevent outer orbit from changing 
+        if (r1 > Rl_accretor_child1) or (r2 > Rl_accretor_child2):#assuming radii of inner stars haven't changed
+            donor_in_stellar_code = donor.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
+            #reduce_mass not subtrac mass, want geen adjust_donor_radius #maybe doesn't matter here 
+            #check if star changes type     
+            donor_in_stellar_code.change_mass(-1*(donor.mass - m3 +(small_numerical_error|units.MSun)), 0.|units.yr)    
+            if not INCLUDE_OUTFLOW_CBD_IN_TSMT: 
+                #stellar type may change
+                accretor_child1_in_stellar_code = accretor.child1.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
+                accretor_child1_in_stellar_code.change_mass(-1*(accretor.child1.mass - m1 +(small_numerical_error|units.MSun)), -1.|units.yr)    
+                accretor_child2_in_stellar_code = accretor.child2.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
+                accretor_child2_in_stellar_code.change_mass(-1*(accretor.child2.mass - m2 +(small_numerical_error|units.MSun)), -1.|units.yr)    
+                accretor.previous_mass = self.get_mass(accretor) 
+#                self.stellar_code.evolve_model(minimum_time_step) #to get updates radii, not just inflation of stars due to accretion#needed? silvia
+            self.copy_from_stellar()
+                   
+            if (r1 > Rl_accretor_child1):
+                accretor.child1.is_donor = True
+                stopping_condition = perform_inner_merger(accretor, accretor.child1, accretor.child2, self) 
+            else:                 
+                accretor.child2.is_donor = True
+                stopping_condition = perform_inner_merger(accretor, accretor.child2, accretor.child1, self) 
+
+            self.instantaneous_evolution = True #skip secular evolution    
+            return stopping_condition
+
+        time_step = next_time_step
         # Check for change of TMT regimes 
         CBD, CBD_fraction = CBD_check(m3, m1+m2, a_outer, e_outer, a_inner, e_inner)
         if (CBD != CBD_prev): # In case a transition from CBD to BA occurs or vice versa, we manually reduce the time step
-            time_step = minimum_time_step
+            time_step = min(time_step, initial_time_step)
         if (not INCLUDE_OUTFLOW_CBD_IN_TSMT) and (CBD): 
             conservative_CBD = True            
 
-        # Printing data if transition from ballistic accretion to CBD occurs or vice versa
-        if (CBD != CBD_prev) and (not GW): 
-            self.save_snapshot()       
-
-        # Printing data if transition to or out of GW regime occurs
-        if (GW != GW_prev): 
-            self.save_snapshot()       
+#       to work this requires updating the parameters of the triple object, not just the parameters in this function
+#         Printing data if transition from ballistic accretion to CBD occurs or vice versa
+#        if (CBD != CBD_prev) and (not GW): 
+#            self.save_snapshot()       
+#
+#         Printing data if transition to or out of GW regime occurs
+#        q_inner = params_new[3]/params_new[4]
+#        if q_inner < 1:
+#           q_inner = 1./q_inner
+#        adot_GDF = calculate_adot_GDF(a_inner, e_inner, q_inner, m1, m2, m1+m2, CBD)
+#        adot_CBD = calculate_adot_CBD(a_inner, e_inner, q_inner, bs.relative_inclination, m1+m2, -1*bs.mass_transfer_rate, CBD, self)
+#        adot_GW = calculate_adot_GW(a_inner, e_inner, m1, m2)    
+#        GW = False
+#        if abs(adot_GW) > max(abs(adot_GDF), abs(adot_CBD)):
+#           GW = True
+#        if (GW != GW_prev): 
+#            self.save_snapshot()       
             
-        # Check for dynamical instability silvia ?           
-        # Check for mt instability silvia ?            
-        #if timesteps are small, this isn't necessary. 
-        # but code could be faster if we stable tmt in one go. 
-
-        sys.exit()
+    #small difference between total_time_passed and timestep taken by TRES/stellar evolution
+#    print(total_time_passed, self.triple.time-self.previous_time) 
         
     bs.semimajor_axis = a_outer
     bs.eccentricity = e_outer
@@ -1332,21 +1389,23 @@ def triple_stable_mass_transfer(bs, donor, accretor, self):
     #reduce_mass not subtrac mass, want geen adjust_donor_radius #maybe doesn't matter here 
     #check if star changes type     
     donor_in_stellar_code.change_mass(-1*(donor.mass - m3 +(small_numerical_error|units.MSun)), 0.|units.yr)    
+
+    if not INCLUDE_OUTFLOW_CBD_IN_TSMT: 
+        #stellar type may change
+        accretor_child1_in_stellar_code = accretor.child1.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
+        accretor_child1_in_stellar_code.change_mass(-1*(accretor.child1.mass - m1 +(small_numerical_error|units.MSun)), -1.|units.yr)    
+        accretor_child2_in_stellar_code = accretor.child2.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
+        accretor_child2_in_stellar_code.change_mass(-1*(accretor.child2.mass - m2 +(small_numerical_error|units.MSun)), -1.|units.yr)    
+
+    self.stellar_code.evolve_model(minimum_time_step) #to get updates radii, not just inflation of stars due to accretion
     self.copy_from_stellar()
 
-    if not conservative: 
-        #reduce_mass not subtrac mass, want geen adjust_donor_radius #maybe doesn't matter here 
-        #check if star changes type     
-        accretor_child1_in_stellar_code = accretor.child1.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
-        accretor_child1_in_stellar_code.change_mass(-1*(accretor_child1.mass - m1 +(small_numerical_error|units.MSun)), 0.|units.yr)    
-        accretor_child2_in_stellar_code = accretor.child2.as_set().get_intersecting_subset_in(self.stellar_code.particles)[0]
-        accretor_child2_in_stellar_code.change_mass(-1*(accretor_child2.mass - m2 +(small_numerical_error|units.MSun)), 0.|units.yr)    
-        self.copy_from_stellar()
-    
-    
-    
-    sys.exit()
-    return False
+    donor.is_donor = False
+    bs.is_mt_stable = True
+    bs.bin_type = bin_type['detached']
+    self.instantaneous_evolution = True #skip secular evolution    
+    self.save_snapshot()   
+    return True
 
 
 

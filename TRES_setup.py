@@ -106,17 +106,17 @@ def test_initial_parameters(inner_primary_mass, inner_secondary_mass, outer_mass
         print('inner_semimajor_axis < outer_semimajor_axis' )
         return False, 0,0
     if (inner_semimajor_axis < 0.|units.RSun):
-        print('error: inner separation not in allowed range')
+        print('error: inner separation not in allowed range, should be >0')
         return False, 0,0
     if (outer_semimajor_axis < 0.|units.RSun):
-        print('error: outer separation not in allowed range')
+        print('error: outer separation not in allowed range, should be >0')
         return False, 0,0
 
     if (inner_eccentricity < 0.) or (inner_eccentricity > 1.):
-        print('error: inner eccentricity not in allowed range')
+        print('error: inner eccentricity not in allowed range, should be [0,1]')
         return False, 0,0
     if (outer_eccentricity < 0.) or (outer_eccentricity > 1.):
-        print('error: outer eccentricity not in allowed range')
+        print('error: outer eccentricity not in allowed range, should be [0,1]')
         return False, 0,0
     if (inner_eccentricity < minimum_eccentricity):
         inner_eccentricity = minimum_eccentricity
@@ -124,18 +124,18 @@ def test_initial_parameters(inner_primary_mass, inner_secondary_mass, outer_mass
         outer_eccentricity = minimum_eccentricity
 
     if (relative_inclination < 0.) or (relative_inclination > np.pi):
-        print('error: relative inclination not in allowed range')
+        print('error: relative inclination not in allowed range, should be [0,pi]')
         return False, 0,0
 
     if (inner_argument_of_pericenter < -1.*np.pi) or (inner_argument_of_pericenter > np.pi):
-        print('error: inner argument of pericenter not in allowed range')
+        print('error: inner argument of pericenter not in allowed range, should be [-pi,pi]')
         return False, 0,0
     if (outer_argument_of_pericenter < -1.*np.pi) or (outer_argument_of_pericenter > np.pi):
-        print('error: outer argument of pericenter not in allowed range')
+        print('error: outer argument of pericenter not in allowed range, should be [-pi,pi]')
         return False, 0,0
 
     if (inner_longitude_of_ascending_node < -1.*np.pi) or (inner_longitude_of_ascending_node > np.pi):
-        print('error: inner longitude of ascending node not in allowed range')
+        print('error: inner longitude of ascending node not in allowed range, should be [-pi,pi]')
         return False, 0,0
         
     return True, inner_eccentricity, outer_eccentricity 

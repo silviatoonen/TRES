@@ -2391,6 +2391,10 @@ class Triple_Class:
                     # therefore the radius change is not important
 
                     successfull_dr = False
+#                    print("should this statement be here? ")
+#                    print(stellar_system.mass, stellar_system.previous_mass)
+#                    print(stellar_system.radius, stellar_system.previous_radius)
+                    
 
             return successfull_dr, 1, stellar_system
 
@@ -2414,9 +2418,6 @@ class Triple_Class:
     def recall_memory_one_step_stellar(self, nr_unsuccessfull, star_unsuccessfull):
         if REPORT_DEBUG:
             print("recall_memory_one_step_stellar")
-
-        print("recall_memory_one_step_stellar")
-        sys.exit()
 
         self.update_time_derivative_of_radius()
         dt = self.triple.time - self.previous_time
@@ -2820,7 +2821,7 @@ class Triple_Class:
                 while successfull_step == False:
                     if self.stellar_code.__module__.split(".")[-2] == "mesa_r15140":
                         print(
-                            "for now, refresh_memory and recall_memory_one_step not available in MESA interface - only issue for mt"
+                            "for now, refresh_memory and recall_memory_one_step not available in MESA interface"
                         )
                         successfull_step = True
                     else:
@@ -2843,9 +2844,8 @@ class Triple_Class:
                     (self.has_donor() or self.has_OLOF_donor())
                     and self.triple.bin_type == "detached"
                     and self.triple.child2.bin_type == "detached"
-                    and dt > self.donor_timescale()
+                    and dt > 0.01*self.donor_timescale()
                 ):
-                    print('rlof found')
                     # self.rewind_to_begin_of_rlof_stellar(dt)
                     # print('RLOF:', self.triple.child2.child1.is_donor, self.triple.bin_type , self.triple.child2.bin_type )
                     if self.stellar_code.__module__.split(".")[-2] == "mesa_r15140":
@@ -2857,34 +2857,13 @@ class Triple_Class:
                     
                     self.copy_from_stellar()
                     self.update_stellar_parameters()
+                    self.update_stellar_parameters()
                     if self.include_CHE:  # only needed when including CHE
                         self.channel_to_stellar.copy_attributes(["rotation_period"])  # for CHE
                     self.refresh_memory()
                     # note that 'previous' parameters cannot be reset
                     # resetting is_donor in determine_time_step
                     continue
-                elif (
-                    (self.has_donor() or self.has_OLOF_donor())
-                    and self.triple.bin_type == "detached"
-                    and self.triple.child2.bin_type == "detached"
-                    and dt > minimum_time_step
-                ):
-                    print('rlof found2')
-
-                    self.determine_mass_transfer_timescale()
-                    if self.check_stopping_conditions_stellar() == False:
-                        print("stopping conditions stellar")
-                        break
-                    print("Stopping condition")
-                        
-                    if not self.resolve_stellar_interaction():
-                        print("stopping conditions stellar interaction")
-                        break
-                    print("resolve")
-                    
-                    
-                    sys.exit()
-
 
             # needed for nucleair timescale
             self.update_time_derivative_of_radius()
@@ -2903,10 +2882,7 @@ class Triple_Class:
             if not self.resolve_stellar_interaction():
                 print("stopping conditions stellar interaction")
                 break
-#            print("resolve")
-#            sys.exit()
-
-            self.update_time_derivative_of_radius()  # includes radius change from wind and ce, not stable mt
+            self.update_time_derivative_of_radius()  # includes radius change from wind, ce & tertiary mt, not stable mt
             self.update_time_derivative_of_moment_of_inertia()  # includes mass and radius change from wind and mass transfer
             if self.check_stopping_conditions_stellar_interaction() == False:
                 print("stopping conditions stellar interaction 2")
@@ -2916,7 +2892,7 @@ class Triple_Class:
             if self.instantaneous_evolution == False:
                 if REPORT_DEBUG:
                     print("Secular evolution")
-
+                
                 # needed for refreshing memory in case secular finds RLOF
                 previous_semimajor_axis_in = self.triple.child2.semimajor_axis
                 previous_eccentricity_in = self.triple.child2.eccentricity
@@ -3013,7 +2989,7 @@ class Triple_Class:
                     print("skip secular")
                 self.secular_code.model_time = self.triple.time
                 self.instantaneous_evolution = False
-
+                
             self.calculate_maximum_change_eccentricity()
 
             if REPORT_DEBUG or MAKE_PLOTS:

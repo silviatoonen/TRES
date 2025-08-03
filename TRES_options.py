@@ -29,7 +29,6 @@ error_dr = 0.05 #0.01
 #reset in case of MESA by function options_mesa below
 minimum_time_step = 1.e-9 |units.Myr
 
-
 max_mass = 100 |units.MSun
 min_mass = 0.08 |units.MSun # for primary stars
 
@@ -41,7 +40,6 @@ time_step_factor_find_RLOF = 0.5
 time_step_factor_kozai = 0.025 # 0.2*0.1, 0.2-> for error in kozai timescale, 0.1-> 10 steps per cycle
 kozai_type_factor = 10.
 maximum_time_step = np.inf|units.Myr
-
 
 #--------------------------------------------------------------------------------------------------------------------
 #TRES stellar evolutiom settings
@@ -64,11 +62,10 @@ fall_back_mass = 41 |units.MSun
 max_iter_TSMT = 100
 eps_TSMT = 1e-15 
 
-#units... silvia pas aan in vergelijkingeen
 #Gas density during ballistic accretion 
 density_BA_in_TSMT = 1e-8 |units.g/(units.cm)**3 
 #Sound speed in gas during ballistic accretion 
-c_s_BA_in_TSMT = 3e6|units.cm/units.s
+c_s_BA_in_TSMT = 3.e6|(units.cm/units.s)
     
 #Include gravitational drag forces during ballistic accretion
 INCLUDE_GDF_IN_TSMT = True
@@ -76,15 +73,15 @@ INCLUDE_GDF_IN_TSMT = True
 #model_I_GDF = 'Ostriker99' 
 model_I_GDF = 'Kim08' #Default
 #Include eccentricity evolution during gas drag phase
-INCLUDE_ECC_GDF_IN_TSMT = False #does this recquire include_gdf_in_tsms to be true?
+INCLUDE_ECC_GDF_IN_TSMT = False #requires INCLUDE_GDF_IN_TSMT to be true to be in effect 
 #Include hydrodynamic drag forces
 INCLUDE_HYDR_IN_TSMT = True
-hydro_drag_coefficient_in_TSMT =1 
+hydro_drag_coefficient_in_TSMT = 1. 
 
 #Allow formation of CBD
 INCLUDE_CBD_IN_TSMT = True
 #Include modified torques for retrograde CBDs
-INCLUDE_RETROGRADE_CBD_IN_TSMT = False#does this recquire include_cbd_in_tsms to be true? silvia
+INCLUDE_RETROGRADE_CBD_IN_TSMT = False # requires INCLUDE_CBD_IN_TSMT to be true to be in effect 
 #Include mass outflow from inner binary during CBD. If True, it is assumed to go through isotropic emission
 INCLUDE_OUTFLOW_CBD_IN_TSMT = False
 

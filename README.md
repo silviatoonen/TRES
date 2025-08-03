@@ -6,7 +6,7 @@ TRES is a numerical framework for simulating hierarchical triple systems with st
 Mass transfer from one star to another and the consequential effect to the orbital dynamics is realized via heuristic recipes.
 These recipes are combined with  three-body  dynamics and stellar evolution inluding their mutual influences. 
 
-TRES includes the effects of common-envelope evolution, circularized stable mass transfer, tides, gravitational wave emission and up-to-date stellar evolution including chemically homogeneous evolution. By default the stellar evolution code SeBa is used. Other stellar evolution codes such as SSE or MESA can also be used.  
+TRES includes the effects of common-envelope evolution, circularized stable mass transfer, tertiary mass transfer, tides, gravitational wave emission and up-to-date stellar evolution including chemically homogeneous evolution. By default the stellar evolution code SeBa is used. Other stellar evolution codes such as SSE or MESA can also be used.  
 
 This document contains the following parts:
 
@@ -14,13 +14,15 @@ This document contains the following parts:
 
 [Simple examples](#Simple-examples-of-runs)
 
+[Understanding the TRES output](#Understanding-the-TRES-output)
+
+[Reducing the TRES output](#Reducing-the-TRES-output)
+
 [TRES-Exo for exoplanet research](#TRES-Exo-for-exoplanet-research)
 
 [TRES with other stellar evolution codes](#TRES-with-other-stellar-evolution-codes)
 
-[Understanding the TRES output](#Understanding-the-TRES-output)
-
-[Reducing the TRES output](#Reducing-the-TRES-output)
+[Tertiary mass transfer in TRES](#Tertiary-mass-transfer)
 
 [TRES development team](#TRES-development-team)
 
@@ -74,7 +76,7 @@ make
 
 
 
-## Simple examples of runs
+## Simple examples
 
 To evolve a single system with the parameters:
 primary mass M=1.2 Solar mass, 
@@ -316,51 +318,6 @@ action items                    add these to:
 --stop_at_CPU_time              to stop the simulation when the computational time exceeds a given value
 
 ```
-## TRES-Exo for exoplanet research
-
-In Columba et al. 2023, (A&A, 675A, 156C) we presented an extension for TRES to incorporate exoplanets.  
-For exoplanet research, we have included the following processes and recommend the following settings:
-
-1) First things first: tell TRES to include Sub-Stellar Objects by setting the boolean EXCLUDE_SSO to False in TRES.options.py. Amongst other things, this will automatically set the minimum mass of a body to 0.2 Jupiter masses (~0.0002 Solar masses) in stead of 0.0075 Solar masses. Note that our extension is only valid for giant planets, hence the minimum mass of 0.2 Jupiter masses.
-2) For the dynamical stability of triples, you can which stability criterium is used through the parameter stability_limit_specification in TRES_setup.py. Options applicable to exoplanets are the simple prescription from Petrovich et al. (1), the full prescription from Petrovich et al. (2), Holman's prescription for S-type orbits (3), Holman's prescription for P-type orbits (4). 
-3) energy-limited atmospheric photoevaporation of planets
-4) initial planetary spin rate as 0.126 the breakup speed (Bryan+2018). This can be adjusted in the function initial_angular_frequency in triple_class.py
-
-Examples 
-1) To evolve a single system (binary star + CBP) that survives for one Hubble time (13.5 Gyr) with the following parameters:
-```
-- primary mass:   M1           1.04  Msun 
-- secondary mass: M2           1.00  Msun
-- CBP mass:       M3           0.011 Msun
-- inner binary semimajor axis:  Ain       54.6  Rsun
-- CBP semimajor axis:           Aout      477.8 Rsun
-- inner binary eccentricity:    Ein       0.67
-- CBP eccentricity:             Eout      0.15
-- relative orbital inclination: i         1.9 (rad)
-- simulation time:      T    1000 Myr
-```
-
-you can run TRES as:
-```
-python TRES.py --M1 1.04 --M2 1. --M3 0.011 --Ain 54.6 --Aout 477.8 --Ein 0.67 --Eout 0.15 -i 1.9 -T 1000  --no_stop_at_mass_transfer 
-```
-and use the rdc_TRES.py and rdc_TRES_csv.py to read the output and print it in readable text format. If you wish to run the complete evolution, use -T 13500 to simulate one Hubble time and you'll obtain a DWD-orbiting CBP ('Magrathea' planet).
-
-2) To evolve a single system (binary star + CBP) where the inner binary merges as a DWD around 10 Gyr, you can use the following command:
-
-```
-python TRES.py --M1 1.33 --M2 1.06 --M3 0.0046 --Ain 26.35 --Aout 3012.9 --Ein 0.3 --Eout 0.1 -i 1.7 -T 11000  --no_stop_at_mass_transfer -f 'testRun_2.hdf'
-```
-
-## TRES with MESA
-
-By default TRES uses the stellar evolution code SeBa (Portegies Zwart et al. 1996, Toonen et al. 2012), but other stellar evolution codes, such as SSE or MESA can be used as well.
-To do so, you simply choose your favorite stellar evolution code when running TRES on the command line (0: SeBa, 1: SSE, 2: MESA). 
-
-If you want to change settings within MESA, this can be done in AMUSE through "particles.set_control('name_of_control', value)". For TRES, we provide the function options_mesa_code in the file TRES_options.py which already sets a few MESA controls. The specific choice of input physics was made in order to be the closest to the SeBa defaults. More details can be found in Sciarini et al. 2025 (in prep.). The full list of MESA controls can be found in https://github.com/MESAHub/mesa/blob/r15140/star/defaults/controls.defaults. In addition we recommend to set the minimum_time_step to 1e-3|units.Myr and to switch GET_GYRATION_RADIUS_FROM_STELLAR_CODE and GET_AMC_FROM_STELLAR_CODE to true. The latter two quantities re then obtained directly from the structure of the star. 
-
-[future]: Note, that when running TRES with MESA, GET_GYRATION_RADIUS_FROM_STELLAR_CODE and GET_AMC_FROM_STELLAR_CODE are set to true by default. These physical quantities are in this case obtained directly from the structure of the star.
-
 
 ## Understanding the TRES output
 
@@ -518,6 +475,71 @@ Do you want to rerun a system in your datafile? No need to copy all the paramete
 For example: ```rdc_TRES.py -f TRES.hdf --print_init -l 0```. This will return something like:
 ```amuse TRES.py -M 1.3 -m 0.5  -l  0.5 -A 200.0 -a 20000.0 -E 0.1 -e 0.5 -G 0.1 -g 0.5 -I 1.3962634016 ```
 
+## TRES-Exo for exoplanet research
+
+In Columba et al. 2023, (A&A, 675A, 156C) we presented an extension for TRES to incorporate exoplanets.  
+For exoplanet research, we have included the following processes and recommend the following settings:
+
+1) First things first: tell TRES to include Sub-Stellar Objects by setting the boolean EXCLUDE_SSO to False in TRES.options.py. Amongst other things, this will automatically set the minimum mass of a body to 0.2 Jupiter masses (~0.0002 Solar masses) in stead of 0.0075 Solar masses. Note that our extension is only valid for giant planets, hence the minimum mass of 0.2 Jupiter masses.
+2) For the dynamical stability of triples, you can which stability criterium is used through the parameter stability_limit_specification in TRES_setup.py. Options applicable to exoplanets are the simple prescription from Petrovich et al. (1), the full prescription from Petrovich et al. (2), Holman's prescription for S-type orbits (3), Holman's prescription for P-type orbits (4). 
+3) energy-limited atmospheric photoevaporation of planets
+4) initial planetary spin rate as 0.126 the breakup speed (Bryan+2018). This can be adjusted in the function initial_angular_frequency in triple_class.py
+
+Examples 
+1) To evolve a single system (binary star + CBP) that survives for one Hubble time (13.5 Gyr) with the following parameters:
+```
+- primary mass:   M1           1.04  Msun 
+- secondary mass: M2           1.00  Msun
+- CBP mass:       M3           0.011 Msun
+- inner binary semimajor axis:  Ain       54.6  Rsun
+- CBP semimajor axis:           Aout      477.8 Rsun
+- inner binary eccentricity:    Ein       0.67
+- CBP eccentricity:             Eout      0.15
+- relative orbital inclination: i         1.9 (rad)
+- simulation time:      T    1000 Myr
+```
+
+you can run TRES as:
+```
+python TRES.py --M1 1.04 --M2 1. --M3 0.011 --Ain 54.6 --Aout 477.8 --Ein 0.67 --Eout 0.15 -i 1.9 -T 1000  --no_stop_at_mass_transfer 
+```
+and use the rdc_TRES.py and rdc_TRES_csv.py to read the output and print it in readable text format. If you wish to run the complete evolution, use -T 13500 to simulate one Hubble time and you'll obtain a DWD-orbiting CBP ('Magrathea' planet).
+
+2) To evolve a single system (binary star + CBP) where the inner binary merges as a DWD around 10 Gyr, you can use the following command:
+
+```
+python TRES.py --M1 1.33 --M2 1.06 --M3 0.0046 --Ain 26.35 --Aout 3012.9 --Ein 0.3 --Eout 0.1 -i 1.7 -T 11000  --no_stop_at_mass_transfer -f 'testRun_2.hdf'
+```
+
+## TRES with other stellar evolution codes
+
+By default TRES uses the stellar evolution code SeBa (Portegies Zwart et al. 1996, Toonen et al. 2012), but other stellar evolution codes, such as SSE or MESA can be used as well.
+To do so, you simply choose your favorite stellar evolution code when running TRES on the command line (0: SeBa, 1: SSE, 2: MESA). 
+
+If you want to change settings within MESA, this can be done in AMUSE through "particles.set_control('name_of_control', value)". For TRES, we provide the function options_mesa_code in the file TRES_options.py which already sets a few MESA controls. The specific choice of input physics was made in order to be the closest to the SeBa defaults. More details can be found in Sciarini et al. 2025 (in prep.). The full list of MESA controls can be found in https://github.com/MESAHub/mesa/blob/r15140/star/defaults/controls.defaults. In addition we recommend to set the minimum_time_step to 1e-3|units.Myr and to switch GET_GYRATION_RADIUS_FROM_STELLAR_CODE and GET_AMC_FROM_STELLAR_CODE to true. The latter two quantities re then obtained directly from the structure of the star. 
+
+[future]: Note, that when running TRES with MESA, GET_GYRATION_RADIUS_FROM_STELLAR_CODE and GET_AMC_FROM_STELLAR_CODE are set to true by default. These physical quantities are in this case obtained directly from the structure of the star.
+
+## Tertiary mass transfer in TRES
+Tertiary mass transfer, when the tertiary star fills its Roche lobe and transfers mass to the inner binary, is also modelled in TRES when including the flag '--no_stop_at_outer_mass_transfer'. An example system can be run with: 'python TRES.py -M 0.7 -m 0.7 -l 1 -E 0 -e 0 -A 10 -a 300 -i 0 -T 13500 --no_stop_at_outer_mass_transfer'. Following Kummer et al. 2025, it includes ballistic accretion, circumbinary disks as well as gravitational emission. The following options can be set in TRES_options.py [default]:
+
+Regarding ballistic accretion:
+```
+density_BA_in_TSMT              [1e-8 |units.g/(units.cm)**3]       Gas density during ballistic accretion  
+c_s_BA_in_TSMT                  [3e6|units.cm/units.s]              Sound speed in gas during ballistic accretion 
+INCLUDE_GDF_IN_TSMT             [True]                              Whether gravitational drag forces are included during ballistic accretion
+model_I_GDF                     ['Kim08']                           Prescription for the wake of the GDF. Options: 'Ostriker99', 'Kim08'
+INCLUDE_ECC_GDF_IN_TSMT         [False]                             To include eccentricity evolution during gas drag phase
+INCLUDE_HYDR_IN_TSMT            [True]                              Whether hydrodynamic drag forces are included during ballistic accretion
+hydro_drag_coefficient_in_TSMT  [1] 
+```
+
+Regarding circumbinary disks:
+```
+INCLUDE_CBD_IN_TSMT             [True]                              To allow the formation of a CBD
+INCLUDE_RETROGRADE_CBD_IN_TSMT  [False]                             To include modified torques for retrograde CBDs
+INCLUDE_OUTFLOW_CBD_IN_TSMT     [False]                             To include mass outflow from inner binary during CBD. If True, it is assumed to go through isotropic emission
+```
 
 ## TRES-development-team
 For more advanced tips, see the README in the developer-folder.
@@ -526,7 +548,8 @@ For more advanced tips, see the README in the developer-folder.
 
 See the following publication: [Toonen et al 2016](https://ui.adsabs.harvard.edu/abs/2016ComAC...3....6T/abstract) for more details on TRES in general.
 See [Columba et al 2023](https://ui.adsabs.harvard.edu/abs/2023A%26A...675A.156C/abstract) for more details on TRES-Exo.
-
+See [Sciarini et al. 2024](https://ui.adsabs.harvard.edu/abs/2025A%26A...698A.240S/abstract) for more details on TRES with SeBa vs MESA
+See [Kummer et al. 2025](https://ui.adsabs.harvard.edu/abs/2025A%26A...693A..84K/abstract) for more details on the modelling of tertiary mass transfer
 
 
 
