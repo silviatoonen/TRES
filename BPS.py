@@ -879,7 +879,7 @@ def parse_arguments():
     parser.add_argument("--stellar_evolution_code", dest="SE_code",  type=int, default = 0,
                       help="which stellar evolution")
                       
-    parser.add_argument("-f", dest="file_name", type =str, default = "TRES.hdf",#"TRES.txt"
+    parser.add_argument("-f", dest="file_name", type =str, default = "BIN.hdf",#"BIN.txt"
                       help="file name")
     parser.add_argument("-F", dest="file_type", type =str, default = "hdf5",#"txt"
                       help="file type")
@@ -910,7 +910,7 @@ if __name__ == '__main__':
 #    stellar_code.stop()
 #    secular_code.stop()
     
-    print('\nYou have used the TRES triple evolution code. Literature reference:')
+    print('\nYou have used the TRES/BIN multiple evolution code. Literature reference:')
     print('** Toonen, Hamers & Portegies Zwart 2016, ComAC, 3, 6T:')
     print('... "The evolution of hierarchical triple star-systems" ')
 
