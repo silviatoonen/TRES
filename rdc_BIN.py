@@ -293,7 +293,7 @@ def parse_arguments():
     parser.add_argument("-f", dest="file_name_root", type =str, default = "BIN",
                       help="file name")                      
     parser.add_argument("-F", dest="output_file", type =str, default = 'screen',
-                      help="output file[%default]")
+                      help="output file")
     parser.add_argument("-S", dest="print_style", type=int, default = 2,
                       help="print style]") 
     parser.add_argument("--save_every_snapshot", dest="save_every_snapshot", action="store_true", default = False, 
